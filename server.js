@@ -206,6 +206,7 @@ async function prepareRun(body, { forceNoApproval }) {
   if (!task) return { status: 400, error: 'message required' };
 
   const settings = await store.loadSettings();
+  applyHostedSettings(settings, body.settings);
   settings.apiKey = process.env.OPENROUTER_API_KEY || settings.apiKey;
   if (forceNoApproval) settings.approvePlans = false;
   const mock = FORCE_MOCK || settings.mock;
@@ -224,6 +225,18 @@ async function prepareRun(body, { forceNoApproval }) {
 
   const run = createRun({ conversation, task, attachments, settings });
   return { run, conversation, mock };
+}
+
+function applyHostedSettings(settings, patch) {
+  if (!IS_VERCEL || !patch || typeof patch !== 'object') return;
+  const stringKeys = ['apiKey', 'braveApiKey', 'userName', 'orchestratorModel', 'verifierModel', 'fallbackModel'];
+  for (const key of stringKeys) {
+    if (typeof patch[key] === 'string' && patch[key].trim()) settings[key] = patch[key].trim();
+  }
+  if (typeof patch.maxParallel !== 'undefined') settings.maxParallel = Math.min(8, Math.max(1, Number(patch.maxParallel) || settings.maxParallel));
+  if (typeof patch.maxRetries !== 'undefined') settings.maxRetries = Math.min(3, Math.max(0, Number(patch.maxRetries) || 0));
+  if (typeof patch.preferFree === 'boolean') settings.preferFree = patch.preferFree;
+  if (typeof patch.mock === 'boolean') settings.mock = patch.mock;
 }
 
 async function persistUserTurn(conversation, run) {

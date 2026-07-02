@@ -24,7 +24,7 @@ Requires Node ≥ 18.17 (plus `python3` on PATH for agents' Python execution). T
 
 This repo includes a Vercel catch-all function for `/api/*`, while `public/` is served as static frontend assets. Hosted runs use a single streaming request because Vercel functions do not share in-memory run state across separate requests. Set `OPENROUTER_API_KEY` in the Vercel project environment for live runs.
 
-Vercel's function filesystem is ephemeral, so hosted settings, conversations, uploads, and workspaces are stored under `/tmp` and can disappear across cold starts or redeploys. Plan review is skipped in hosted mode for the same request-isolation reason. For durable local history and the full code-sandbox experience, run `node server.js` on your machine.
+Vercel's function filesystem is ephemeral, so hosted conversations, uploads, and workspaces are stored under `/tmp` and can disappear across cold starts or redeploys. Hosted UI settings are kept in the browser and sent with each streamed run. Plan review is skipped in hosted mode for the same request-isolation reason. For durable local history and the full code-sandbox experience, run `node server.js` on your machine.
 
 ## How a run works
 
