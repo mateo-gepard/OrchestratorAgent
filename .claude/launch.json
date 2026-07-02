@@ -6,6 +6,12 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["server.js"],
       "port": 4646
+    },
+    {
+      "name": "maestro-mock",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "mock"],
+      "port": 4646
     }
   ]
 }

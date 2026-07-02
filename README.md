@@ -42,6 +42,7 @@ Environment variables:
 | `MOCK=1` | Forces simulated runs globally. |
 | `PORT` | Local HTTP port, default `4646`. |
 | `MAESTRO_DATA_DIR` | Overrides the runtime data directory. |
+| `MAESTRO_ACCESS_CODE` | When set, every `/api/*` request must present this code (header `x-maestro-access` or cookie `maestro_access`). The UI prompts for it once. Use it on any public deployment. |
 | `VERCEL` | Set by Vercel; switches storage and hosted-run behavior. |
 
 ## What It Does
@@ -85,7 +86,10 @@ finish inside the 300 second function limit.
 ├── .gitignore                Ignores runtime data, logs, node_modules, macOS files
 ├── package.json              Node package metadata and scripts
 ├── vercel.json               Vercel function duration config
-├── server.js                 HTTP server, API routes, SSE, static files
+├── Dockerfile                Full-pipeline container image (recommended hosting)
+├── .dockerignore             Keeps data/, results, and git out of the image
+├── fly.toml                  Fly.io app config (volume, SSE-friendly service)
+├── server.js                 HTTP server, API routes, SSE, static files, access gate
 ├── api/
 │   └── [...path].js          Vercel catch-all wrapper that exports server.js
 ├── src/
@@ -103,7 +107,9 @@ finish inside the 300 second function limit.
 │   ├── app.js                Vanilla JS state, rendering, SSE, settings, uploads
 │   └── styles.css            Complete UI styling and responsive layout
 ├── bench/
-│   └── tasks.jsonl           Benchmark/task fixtures for agent evaluation
+│   ├── tasks.jsonl           Benchmark task corpus (27 tasks, 5 categories)
+│   ├── run.js                Benchmark runner: maestro vs single-model baselines
+│   └── results/              Timestamped results.jsonl + report.md (git-ignored)
 ├── .claude/
 │   └── launch.json           Local launch config for port 4646
 └── data/                     Runtime state, git-ignored
@@ -405,42 +411,93 @@ Artifact flow:
    attachments.
 4. The UI renders download chips, image galleries, and playable HTML previews.
 
-## Vercel Deployment
+## Hosted Deployment
 
-The repository is Vercel-ready:
+### Docker / Fly.io / Railway — recommended (full pipeline)
 
-- `api/[...path].js` exports the default handler from `server.js`.
-- `vercel.json` sets `api/**/*.js` `maxDuration` to `300`.
-- Static assets in `public/` are served normally.
+A long-running container runs the exact same pipeline as local mode: planner,
+parallel agents, verifier, adaptive replanning, synthesis, durable state.
+This is the deployment to show people.
 
-Set `OPENROUTER_API_KEY` in the Vercel project for live hosted runs.
+Docker:
 
-Hosted constraints:
+```bash
+docker build -t maestro .
+docker run -p 4646:4646 -v maestro_data:/data \
+  -e OPENROUTER_API_KEY=sk-or-... \
+  -e MAESTRO_ACCESS_CODE=choose-a-code \
+  maestro
+```
+
+Fly.io (config in `fly.toml`):
+
+```bash
+fly launch --no-deploy
+fly volumes create maestro_data --size 1
+fly secrets set OPENROUTER_API_KEY=sk-or-... MAESTRO_ACCESS_CODE=choose-a-code
+fly deploy
+```
+
+Railway: create a project from the repo — it picks up the `Dockerfile`
+automatically. Attach a volume at `/data` and set the same two variables.
+
+Notes:
+
+- **Always set `MAESTRO_ACCESS_CODE` on a public deployment.** The server
+  spends your OpenRouter key and executes model-written code; the access gate
+  is what stands between that and the open internet.
+- The deployment is single-tenant: all visitors share one settings file and
+  one conversation list.
+- The image ships python3 with numpy/pandas/matplotlib (apt) so `run_code`
+  charts work out of the box; the venv is created on the volume at first boot.
+
+### Vercel — legacy (degraded single-agent mode)
+
+The Vercel path still works (`api/[...path].js` + `vercel.json`,
+`maxDuration` 300) but is constrained by the platform:
 
 - Conversation and file state live under `/tmp/maestro-data` and are not
   durable.
-- Plan review is disabled.
-- Runs use the direct single-agent path.
+- Plan review is disabled; runs use the direct single-agent path.
 - Tool and output budgets are smaller.
 - No verifier, no adaptive replanning, no synthesis call, and no retries.
 - A timer aborts at 270 seconds with a clear stop message before Vercel's 300
   second hard timeout.
 
-Use local mode for long, high-quality, multi-agent jobs.
+Use the container deployment (or local mode) for real multi-agent jobs.
 
-## Benchmark Fixtures
+## Benchmarks
 
-`bench/tasks.jsonl` contains sample tasks across:
+`bench/tasks.jsonl` is the task corpus (27 tasks across `code`, `math`,
+`research`, `realworld`, `agentic`); `bench/run.js` is the runner. It exists
+to turn Maestro's core claim — frontier-quality output at a fraction of
+frontier cost — into a measured number.
 
-- `code`
-- `math`
-- `research`
-- `realworld`
-- `agentic`
+```bash
+npm run bench                       # maestro vs opus-only, all tasks
+node bench/run.js --only c1,m1      # subset by id
+node bench/run.js --category code   # subset by category/tier
+node bench/run.js --modes maestro,single:openai/gpt-5.1
+node bench/run.js --mock            # pipeline smoke test, zero spend
+node bench/run.js --list            # show the corpus
+```
 
-The entries include prompts, expected exact answers or runtime-scored notes, and
-some artifact/check requirements. There is no benchmark runner in this repo yet;
-the file is a fixture corpus for manual or future automated evaluation.
+Each task runs through one or more modes — `maestro` (full pipeline) and
+`single:<model>` baselines (one agent node on that model with the same web/code
+tools, no verifier, no retries) — and is scored by its `scoring` field:
+
+| Scoring | How it's graded |
+|---|---|
+| `tests` | The task's Python asserts execute against the run workspace. |
+| `exact` | The expected string must appear in the final answer. |
+| `judge` | A judge model (default `gpt-5.1`, `--judge` to change) scores 0–10. |
+| `judge+checks` | Judge score gated by programmatic checks: required artifacts exist, test commands pass, citation domains present. Failed checks cap the score at 4. |
+| `exact-runtime` | Live-web research tasks — judged, since there is no offline ground truth; flagged in the report. |
+
+Results land in `bench/results/<timestamp>/` as `results.jsonl` plus a
+`report.md` with a mode-comparison summary ("Maestro: X% pass at $A vs
+opus-only: Y% pass at $B"). `preferFree` is off during benchmarks so costs
+reflect real paid prices; runs are billed to your OpenRouter key.
 
 ## Security and Cost Notes
 

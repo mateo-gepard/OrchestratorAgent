@@ -627,6 +627,13 @@ textarea, input, select { font-family: inherit; }
   color: var(--text-faint);
   flex-wrap: wrap;
 }
+.run-save {
+  color: var(--green);
+  background: var(--green-soft);
+  padding: 2px 8px;
+  border-radius: 20px;
+  cursor: help;
+}
 .run-error {
   margin: 10px 16px 14px;
   background: var(--red-soft);

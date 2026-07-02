@@ -4,6 +4,7 @@
 // retry, streaming deltas, per-node cost, synthesis streaming.
 
 import { emit, snapshot } from './orchestrator.js';
+import { estimateCost } from './models.js';
 import { sleep } from './util.js';
 
 const MOCK_PLAN = {
@@ -90,6 +91,10 @@ async function streamText(run, text, emitFn, cps = 900) {
 
 export async function executeMockRun(run, conversation, { onFinished }) {
   try {
+    // Every number in a mock run is synthetic — pin the savings counterfactual
+    // to the canonical frontier model so the demo exercises the badge
+    // regardless of which orchestrator the user configured.
+    run.totals.baselineModel = 'anthropic/claude-opus-4.5';
     emit(run, 'phase', { phase: 'planning' });
     await sleep(1800);
 
@@ -151,6 +156,7 @@ function addMockUsage(run, cost, tin, tout) {
   run.totals.tokensIn += tin;
   run.totals.tokensOut += tout;
   run.totals.calls += 1;
+  run.totals.baselineCost += estimateCost(run.totals.baselineModel || 'anthropic/claude-opus-4.5', tin, tout);
   emit(run, 'usage', { ...run.totals });
 }
 
@@ -190,8 +196,11 @@ async function mockNode(run, id, { cost, delay, failFirst = false, skipVerify = 
 
     st.status = 'done';
     st.cost = cost;
-    st.tokensIn = Math.round(cost * 40000);
-    st.tokensOut = Math.round(cost * 18000);
+    // Token volumes sized so the frontier-baseline counterfactual lands around
+    // 2× the routed cost — representative of a real mixed-fleet run, and it
+    // exercises the "saved vs frontier-only" badge in the UI.
+    st.tokensIn = Math.round(cost * 140000);
+    st.tokensOut = Math.round(cost * 55000);
     st.ms = Date.now() - started;
     addMockUsage(run, cost, st.tokensIn, st.tokensOut);
     emit(run, 'node_result', {

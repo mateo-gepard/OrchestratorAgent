@@ -1,4 +1,5 @@
 node_modules/
 data/
+bench/results/
 .DS_Store
 *.log

@@ -12,7 +12,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chat } from './openrouter.js';
-import { getModel, ensureLivePricing, availableModels, routeModel } from './models.js';
+import { getModel, ensureLivePricing, availableModels, routeModel, estimateCost } from './models.js';
 import { loadFile } from './store.js';
 import { extractJson, rid, truncate, truncateMiddle } from './util.js';
 import { toolDefs, execTool, summarizeArgs, listWorkspace } from './tools.js';
@@ -67,7 +67,7 @@ export function createRun({ conversation, task, attachments, settings }) {
     endedAt: null,
     plan: null,
     nodes: {}, // nodeId -> state
-    totals: { cost: 0, tokensIn: 0, tokensOut: 0, calls: 0 },
+    totals: { cost: 0, tokensIn: 0, tokensOut: 0, calls: 0, baselineCost: 0, baselineModel: settings.orchestratorModel },
     answer: '',
     artifacts: [],
     adaptations: [],
@@ -123,6 +123,9 @@ function addUsage(run, usage) {
   run.totals.tokensIn += usage.tokensIn || 0;
   run.totals.tokensOut += usage.tokensOut || 0;
   run.totals.calls += 1;
+  // Counterfactual: what these exact tokens would cost if every call ran on
+  // the (frontier) orchestrator model — the delta is what routing saved.
+  run.totals.baselineCost += estimateCost(run.totals.baselineModel, usage.tokensIn || 0, usage.tokensOut || 0);
   emit(run, 'usage', { ...run.totals });
 }
 
@@ -147,6 +150,7 @@ export async function executeRun(run, conversation, { onFinished }) {
     await ensureLivePricing();
     await prepareWorkspace(run);
     if (run.settings.hostedDirect) createHostedDirectPlan(run);
+    else if (run.presetPlan) adoptPresetPlan(run);
     else await planPhase(run, ctx, date);
     await approvalGate(run);
     await executeGraph(run);
@@ -336,6 +340,16 @@ async function planPhase(run, ctx, date) {
   for (const node of plan.nodes) {
     run.nodes[node.id] = newNodeState();
   }
+  emit(run, 'plan', plan);
+}
+
+// A caller (e.g. the benchmark runner) supplied the plan directly — validate
+// and adopt it without spending a planner call.
+function adoptPresetPlan(run) {
+  emit(run, 'phase', { phase: 'planning' });
+  const plan = validatePlan(run.presetPlan, run.settings);
+  run.plan = plan;
+  for (const node of plan.nodes) run.nodes[node.id] = newNodeState();
   emit(run, 'plan', plan);
 }
 

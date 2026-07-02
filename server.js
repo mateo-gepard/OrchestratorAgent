@@ -3,6 +3,7 @@
 //   MOCK=1 node server.js     → simulated runs, no API key needed
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +18,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT) || 4646;
 const FORCE_MOCK = process.env.MOCK === '1';
+// Optional shared-secret gate for public deployments: when set, every /api/*
+// request must carry the code (x-maestro-access header or maestro_access
+// cookie). The UI prompts for it once and stores it as a cookie.
+const ACCESS_CODE = process.env.MAESTRO_ACCESS_CODE || '';
 const BODY_LIMIT = 25 * 1024 * 1024;
 const HOSTED_GRACEFUL_STOP_MS = 270 * 1000;
 const HOSTED_GRACEFUL_STOP_MESSAGE =
@@ -44,6 +49,7 @@ export async function handler(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith('/api/')) {
+      if (!checkAccess(req)) return sendJson(res, 401, { error: 'access code required' });
       await handleApi(req, res, url);
     } else {
       await serveStatic(req, res, url);
@@ -311,6 +317,24 @@ function trimRuns() {
   while (activeRuns.size > 20 && finished.length) {
     activeRuns.delete(finished.shift().id);
   }
+}
+
+function checkAccess(req) {
+  if (!ACCESS_CODE) return true;
+  const header = req.headers['x-maestro-access'];
+  const cookie = (req.headers.cookie || '').match(/(?:^|;\s*)maestro_access=([^;]+)/)?.[1];
+  let given = header || '';
+  if (!given && cookie) {
+    try {
+      given = decodeURIComponent(cookie);
+    } catch {
+      given = cookie;
+    }
+  }
+  if (!given) return false;
+  const a = crypto.createHash('sha256').update(String(given)).digest();
+  const b = crypto.createHash('sha256').update(ACCESS_CODE).digest();
+  return crypto.timingSafeEqual(a, b);
 }
 
 function maskSettings(settings) {

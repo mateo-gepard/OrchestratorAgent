@@ -6,7 +6,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "mock": "MOCK=1 node server.js"
+    "mock": "MOCK=1 node server.js",
+    "bench": "node bench/run.js",
+    "bench:smoke": "node bench/run.js --mock --only c1"
   },
   "engines": {
     "node": ">=18.17"

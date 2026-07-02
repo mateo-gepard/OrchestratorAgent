@@ -1,0 +1,7 @@
+node_modules
+data
+bench/results
+.git
+.claude
+.DS_Store
+*.log
