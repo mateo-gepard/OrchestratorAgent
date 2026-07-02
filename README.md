@@ -20,6 +20,12 @@ MOCK=1 node server.js
 
 Requires Node ≥ 18.17 (plus `python3` on PATH for agents' Python execution). The `OPENROUTER_API_KEY` environment variable overrides the stored key.
 
+## Vercel deployment
+
+This repo includes a Vercel catch-all function for `/api/*`, while `public/` is served as static frontend assets. Set `OPENROUTER_API_KEY` in the Vercel project environment for live runs.
+
+Vercel's function filesystem is ephemeral, so hosted settings, conversations, uploads, and workspaces are stored under `/tmp` and can disappear across cold starts or redeploys. For durable local history and the full code-sandbox experience, run `node server.js` on your machine.
+
 ## How a run works
 
 ```

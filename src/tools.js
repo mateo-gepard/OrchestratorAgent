@@ -13,7 +13,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { DATA_ROOT } from './paths.js';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 const FETCH_CAP = 20_000;
@@ -22,7 +22,6 @@ const CODE_OUT_CAP = 12_000;
 
 // ---------------------------------------------------------------- sandbox runtimes
 
-const DATA_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
 const VENV_DIR = path.join(DATA_ROOT, 'sandbox', 'venv');
 const VENV_PACKAGES = ['sympy', 'openpyxl'];
 

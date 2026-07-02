@@ -29,11 +29,14 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
-await store.init();
-ensureLivePricing(); // fire-and-forget; awaited again before first plan
-initSandbox().catch(() => {}); // detect runtimes + build the Python venv
+const ready = (async () => {
+  await store.init();
+  ensureLivePricing(); // fire-and-forget; awaited again before first plan
+  initSandbox().catch(() => {}); // detect runtimes + build the Python venv
+})();
 
-const server = http.createServer(async (req, res) => {
+export async function handler(req, res) {
+  await ready;
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith('/api/')) {
@@ -44,11 +47,16 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     sendJson(res, 500, { error: err.message });
   }
-});
+}
 
-server.listen(PORT, () => {
-  console.log(`\n  ✦ Maestro is running → http://localhost:${PORT}${FORCE_MOCK ? '  (mock mode)' : ''}\n`);
-});
+export default handler;
+
+if (!process.env.VERCEL) {
+  const server = http.createServer(handler);
+  server.listen(PORT, () => {
+    console.log(`\n  ✦ Maestro is running → http://localhost:${PORT}${FORCE_MOCK ? '  (mock mode)' : ''}\n`);
+  });
+}
 
 // --- API ---------------------------------------------------------------------
 
@@ -270,6 +278,11 @@ async function serveArtifact(res, pathname) {
 // --- plumbing ------------------------------------------------------------------
 
 function readBody(req) {
+  if (req.body !== undefined) {
+    if (Buffer.isBuffer(req.body)) return parseJsonBody(req.body.toString('utf8'));
+    if (typeof req.body === 'string') return parseJsonBody(req.body);
+    return Promise.resolve(req.body || {});
+  }
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -291,6 +304,10 @@ function readBody(req) {
     });
     req.on('error', reject);
   });
+}
+
+function parseJsonBody(raw) {
+  return Promise.resolve().then(() => JSON.parse(raw || '{}'));
 }
 
 function sendJson(res, status, obj) {

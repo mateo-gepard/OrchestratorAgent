@@ -11,12 +11,12 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { chat } from './openrouter.js';
 import { getModel, ensureLivePricing, availableModels, routeModel } from './models.js';
 import { loadFile } from './store.js';
 import { extractJson, rid, truncate, truncateMiddle } from './util.js';
 import { toolDefs, execTool, summarizeArgs, listWorkspace } from './tools.js';
+import { DATA_ROOT } from './paths.js';
 import {
   plannerSystemPrompt,
   plannerUserPrompt,
@@ -46,7 +46,7 @@ const EFFORT_MAX_TOKENS = { none: 8000, low: 10_000, medium: 14_000, high: 20_00
 const REASONING_LEVELS = ['none', 'low', 'medium', 'high'];
 const TOOL_GROUPS = ['web', 'code'];
 
-const WORKSPACES_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data', 'workspaces');
+const WORKSPACES_ROOT = path.join(DATA_ROOT, 'workspaces');
 
 export function workspacePath(runId) {
   return path.join(WORKSPACES_ROOT, runId);

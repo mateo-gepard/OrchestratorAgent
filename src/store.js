@@ -2,15 +2,14 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { DATA_ROOT } from './paths.js';
 import { rid } from './util.js';
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
 const DIRS = {
-  conversations: path.join(ROOT, 'conversations'),
-  files: path.join(ROOT, 'files'),
+  conversations: path.join(DATA_ROOT, 'conversations'),
+  files: path.join(DATA_ROOT, 'files'),
 };
-const SETTINGS_PATH = path.join(ROOT, 'settings.json');
+const SETTINGS_PATH = path.join(DATA_ROOT, 'settings.json');
 
 export const DEFAULT_SETTINGS = {
   apiKey: '',
