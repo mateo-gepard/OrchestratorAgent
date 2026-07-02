@@ -161,6 +161,8 @@ Very long outputs arrive with the MIDDLE elided (marked "[…N characters elided
 
 Fail only on substantive problems: a missing deliverable, factually or logically wrong content, ignored constraints, broken/incomplete code, fabricated sources, wrong format where format was specified. Do NOT fail on style, tone, or things the rubric doesn't ask for.
 ${toolBlock}
+Use the score as the source of truth for the final verdict: score 5 or higher is a pass; score below 5 is a fail.
+
 When you are done checking, respond with JSON only:
 {"pass": true|false, "score": 0-10, "feedback": "if fail: specific, actionable fixes, max ~120 words. if pass: one short sentence."}`;
 }

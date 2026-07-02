@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './src/store.js';
 import { CATALOG, ensureLivePricing } from './src/models.js';
-import { createRun, executeRun, resolveApproval, workspacePath } from './src/orchestrator.js';
+import { compactEventForStream, createRun, executeRun, resolveApproval, workspacePath } from './src/orchestrator.js';
 import { initSandbox } from './src/tools.js';
 import { executeMockRun } from './src/mock.js';
 import { IS_VERCEL } from './src/paths.js';
@@ -181,7 +181,7 @@ async function startRunStream(req, res) {
       res.write(': ping\n\n');
     } catch {}
   }, 15000);
-  req.on('close', () => {
+  res.on('close', () => {
     if (!ended && !run.endedAt) run.abort.abort();
     clearInterval(heartbeat);
     run.subscribers.delete(res);
@@ -267,7 +267,7 @@ function handleEvents(req, res, runId) {
   run.subscribers.add(res);
 
   const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000);
-  req.on('close', () => {
+  res.on('close', () => {
     clearInterval(heartbeat);
     run.subscribers.delete(res);
   });
@@ -284,7 +284,7 @@ function sseHeaders() {
 
 function writeSse(res, id, ev) {
   if (id != null) res.write(`id: ${id}\n`);
-  res.write(`data: ${JSON.stringify(ev)}\n\n`);
+  res.write(`data: ${JSON.stringify(compactEventForStream(ev))}\n\n`);
 }
 
 function trimRuns() {

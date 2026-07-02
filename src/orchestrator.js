@@ -84,11 +84,34 @@ export function emit(run, type, data) {
   const idx = run.events.push(ev) - 1;
   for (const res of run.subscribers) {
     try {
-      res.write(`id: ${idx}\ndata: ${JSON.stringify(ev)}\n\n`);
+      res.write(`id: ${idx}\ndata: ${JSON.stringify(compactEventForStream(ev))}\n\n`);
     } catch {
       run.subscribers.delete(res);
     }
   }
+}
+
+export function compactEventForStream(ev) {
+  if (ev.type === 'node_result') {
+    const { output, ...data } = ev.data || {};
+    return { ...ev, data };
+  }
+  if (ev.type === 'done') {
+    const d = ev.data || {};
+    return {
+      ...ev,
+      data: {
+        id: d.id,
+        status: d.status,
+        startedAt: d.startedAt,
+        endedAt: d.endedAt,
+        totals: d.totals,
+        artifacts: d.artifacts || [],
+        adaptations: d.adaptations || [],
+      },
+    };
+  }
+  return ev;
 }
 
 function addUsage(run, usage) {
@@ -910,9 +933,10 @@ async function verifyNode(run, node, output) {
       }
 
       const verdict = extractJson(res.content);
+      const score = typeof verdict.score === 'number' ? verdict.score : null;
       return {
-        pass: verdict.pass !== false,
-        score: typeof verdict.score === 'number' ? verdict.score : null,
+        pass: score != null ? score >= 5 : verdict.pass !== false,
+        score,
         feedback: String(verdict.feedback || ''),
         checked: st.toolLog.some((e) => e.by === 'verifier'),
       };
@@ -1002,7 +1026,9 @@ async function synthesisPhase(run, ctx, date) {
   if (plan.synthesis === 'none' && plan.nodes.length === 1 && usable.length === 1) {
     run.answer = run.nodes[usable[0].id].output;
     emit(run, 'phase', { phase: 'synthesis' });
-    emit(run, 'answer_delta', { text: run.answer });
+    for (let i = 0; i < run.answer.length; i += 2000) {
+      emit(run, 'answer_delta', { text: run.answer.slice(i, i + 2000) });
+    }
     emit(run, 'answer_done', {});
     return;
   }
