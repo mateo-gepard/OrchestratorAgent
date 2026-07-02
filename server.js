@@ -18,6 +18,9 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT) || 4646;
 const FORCE_MOCK = process.env.MOCK === '1';
 const BODY_LIMIT = 25 * 1024 * 1024;
+const HOSTED_GRACEFUL_STOP_MS = 270 * 1000;
+const HOSTED_GRACEFUL_STOP_MESSAGE =
+  'Hosted Vercel runs are limited to 300 seconds. Maestro stopped this run a little early so partial work could be saved. Run locally for longer tasks.';
 
 const activeRuns = new Map(); // runId -> run (kept in memory; snapshots persist)
 
@@ -176,6 +179,7 @@ async function startRunStream(req, res) {
   run.subscribers.add(res);
 
   let ended = false;
+  const hostedStopTimer = installHostedStopTimer(run);
   const heartbeat = setInterval(() => {
     try {
       res.write(': ping\n\n');
@@ -194,11 +198,21 @@ async function startRunStream(req, res) {
     console.error('streamed run crashed:', err);
   } finally {
     ended = true;
+    if (hostedStopTimer) clearTimeout(hostedStopTimer);
     clearInterval(heartbeat);
     run.subscribers.delete(res);
     if (!res.writableEnded) res.end();
     trimRuns();
   }
+}
+
+function installHostedStopTimer(run) {
+  if (!IS_VERCEL) return null;
+  return setTimeout(() => {
+    if (run.endedAt || run.abort.signal.aborted) return;
+    run.stopMessage = HOSTED_GRACEFUL_STOP_MESSAGE;
+    run.abort.abort();
+  }, HOSTED_GRACEFUL_STOP_MS);
 }
 
 async function prepareRun(body, { forceNoApproval }) {
@@ -208,7 +222,12 @@ async function prepareRun(body, { forceNoApproval }) {
   const settings = await store.loadSettings();
   applyHostedSettings(settings, body.settings);
   settings.apiKey = process.env.OPENROUTER_API_KEY || settings.apiKey;
-  if (forceNoApproval) settings.approvePlans = false;
+  if (forceNoApproval) {
+    settings.approvePlans = false;
+    settings.hostedDirect = true;
+    settings.maxParallel = 1;
+    settings.maxRetries = 0;
+  }
   const mock = FORCE_MOCK || settings.mock;
   if (!mock && !settings.apiKey) {
     return { status: 400, error: 'No OpenRouter API key configured. Open Settings (gear icon) and add one, or enable mock mode.' };

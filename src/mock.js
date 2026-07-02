@@ -137,8 +137,9 @@ export async function executeMockRun(run, conversation, { onFinished }) {
   } catch {
     run.status = 'stopped';
     run.endedAt = Date.now();
-    if (!run.answer) run.answer = '*Run stopped.*';
-    emit(run, 'error', { message: 'Run stopped by user.' });
+    const message = run.stopMessage || 'Run stopped by user.';
+    if (!run.answer) run.answer = run.stopMessage ? `**Run stopped:** ${message}` : '*Run stopped.*';
+    emit(run, 'error', { message, status: run.status });
     emit(run, 'phase', { phase: 'stopped' });
   }
   emit(run, 'done', snapshot(run));

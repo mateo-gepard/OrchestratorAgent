@@ -34,6 +34,7 @@ const NODE_OUTPUT_CAP = 60_000; // chars of one node's output passed downstream
 const TEXT_FILE_CAP = 60_000;
 const DELTA_FLUSH_MS = 250;
 const MAX_TOOL_ROUNDS = 12; // tool rounds per agent attempt
+const HOSTED_TOOL_ROUNDS = 4;
 const MAX_VERIFY_ROUNDS = 4; // tool rounds the verifier gets
 const MAX_REPLANS = 2; // graph adaptations per run
 const TOOL_RESULT_CAP = 1500; // chars of a tool result kept in the log/events
@@ -43,6 +44,7 @@ const VERIFY_OUTPUT_CAP = 24_000; // chars of node output shown to the verifier 
 const VERIFY_TOOL_RESULT_CAP = 4_000; // chars of each tool result kept in the verifier's context
 
 const EFFORT_MAX_TOKENS = { none: 8000, low: 10_000, medium: 14_000, high: 20_000 };
+const HOSTED_EFFORT_MAX_TOKENS = { none: 4500, low: 5500, medium: 6500, high: 6500 };
 const REASONING_LEVELS = ['none', 'low', 'medium', 'high'];
 const TOOL_GROUPS = ['web', 'code'];
 
@@ -76,6 +78,7 @@ export function createRun({ conversation, task, attachments, settings }) {
     events: [],
     subscribers: new Set(),
     abort: new AbortController(),
+    stopMessage: null,
   };
 }
 
@@ -108,6 +111,7 @@ export function compactEventForStream(ev) {
         totals: d.totals,
         artifacts: d.artifacts || [],
         adaptations: d.adaptations || [],
+        stopMessage: d.stopMessage || null,
       },
     };
   }
@@ -142,7 +146,8 @@ export async function executeRun(run, conversation, { onFinished }) {
   try {
     await ensureLivePricing();
     await prepareWorkspace(run);
-    await planPhase(run, ctx, date);
+    if (run.settings.hostedDirect) createHostedDirectPlan(run);
+    else await planPhase(run, ctx, date);
     await approvalGate(run);
     await executeGraph(run);
     await autoSaveCode(run).catch(() => {});
@@ -154,10 +159,10 @@ export async function executeRun(run, conversation, { onFinished }) {
   } catch (err) {
     run.status = run.abort.signal.aborted ? 'stopped' : 'error';
     run.endedAt = Date.now();
-    const message = run.abort.signal.aborted ? 'Run stopped by user.' : err.message;
-    emit(run, 'error', { message });
+    const message = run.abort.signal.aborted ? run.stopMessage || 'Run stopped by user.' : err.message;
+    emit(run, 'error', { message, status: run.status });
     emit(run, 'phase', { phase: run.status });
-    if (!run.answer) run.answer = run.abort.signal.aborted ? '*Run stopped.*' : `**The run failed:** ${message}`;
+    if (!run.answer) run.answer = run.abort.signal.aborted ? (run.stopMessage ? `**Run stopped:** ${message}` : '*Run stopped.*') : `**The run failed:** ${message}`;
   }
   emit(run, 'done', snapshot(run));
   await onFinished(snapshot(run));
@@ -190,6 +195,7 @@ export function snapshot(run) {
     answer: run.answer,
     artifacts: run.artifacts,
     adaptations: run.adaptations,
+    stopMessage: run.stopMessage || null,
     planLog: run.planLog
       ? { thinking: truncate(run.planLog.thinking, 20_000), json: truncate(run.planLog.json, 20_000) }
       : null,
@@ -331,6 +337,64 @@ async function planPhase(run, ctx, date) {
     run.nodes[node.id] = newNodeState();
   }
   emit(run, 'plan', plan);
+}
+
+function createHostedDirectPlan(run) {
+  emit(run, 'phase', { phase: 'planning' });
+  const tools = hostedDirectTools(run);
+  const model = availableModels().some((m) => m.id === run.settings.orchestratorModel)
+    ? run.settings.orchestratorModel
+    : run.settings.fallbackModel;
+  const reasoning = getModel(model)?.reasoning ? 'low' : 'none';
+  const attachmentIds = run.attachments.map((a) => a.id);
+  const node = {
+    id: 'n1',
+    title: 'Complete request',
+    objective: 'Complete the user request end-to-end in one focused hosted run.',
+    model,
+    reasoning,
+    tools,
+    depends_on: [],
+    uses_attachments: attachmentIds,
+    instructions: hostedDirectInstructions(run, tools),
+    deliverables: ['A complete final answer to the user request, with any requested files saved to the workspace.'],
+    verification: 'none',
+  };
+  run.plan = {
+    analysis: 'Hosted Vercel mode uses one focused agent so the request can finish inside the platform time limit.',
+    strategy: 'One focused hosted agent completes the request directly.',
+    synthesis: 'none',
+    synthesis_instructions: '',
+    nodes: [node],
+  };
+  run.nodes[node.id] = newNodeState();
+  emit(run, 'plan', run.plan);
+}
+
+function hostedDirectTools(run) {
+  const task = run.task.toLowerCase();
+  const hasAttachments = run.attachments.length > 0;
+  const needsWeb = /\b(latest|current|today|news|price|prices|weather|stock|exchange rate|recent|release|version|docs?|source|sources|cite|citation|search|browse|look up|lookup|web|url|http|github|vercel|aktuell|heute|neueste|nachrichten|preis|preise|quelle|quellen|suche|such)\b/i.test(task);
+  const needsCode = hasAttachments || /\b(code|script|program|app|website|html|css|javascript|typescript|python|csv|json|excel|spreadsheet|chart|plot|graph|file|data|analy[sz]e|build|implement|debug|fix|deploy|repo|repository|vercel|programm|datei|daten|diagramm|tabelle|baue|mach|reparier|korrigier)\b/i.test(task);
+  return [needsWeb && 'web', needsCode && 'code'].filter(Boolean);
+}
+
+function hostedDirectInstructions(run, tools) {
+  const toolLine = tools.length
+    ? `Use the available ${tools.join(' + ')} tools only when they are necessary for the final answer.`
+    : 'No tools are needed unless the task explicitly requires external files or live facts.';
+  return `Complete the original user request end-to-end in one pass.
+
+You are running on the hosted Vercel deployment, which has a strict 300-second function limit. Prioritize finishing the concrete deliverable over broad exploration.
+
+${toolLine}
+
+Hosted execution rules:
+- Keep tool calls minimal and decisive; stop gathering context once you can answer correctly.
+- If live/current facts are required and you have web tools, cite the URLs you actually fetched.
+- If code or files are requested and you have code tools, save the requested deliverable files to the workspace and mention their filenames.
+- Do not ask follow-up questions. Make reasonable assumptions and list them briefly only if they affect the result.
+- Keep the final answer complete but compact enough to finish within the hosted limit.`;
 }
 
 function normTools(raw) {
@@ -544,6 +608,7 @@ async function executeGraph(run) {
 
 async function maybeAdapt(run, failedNode, reason) {
   if (run.abort.signal.aborted) return;
+  if (run.settings.hostedDirect) return;
   if (run.adapting) return; // another failure is already being handled
   if (run.replansUsed >= MAX_REPLANS) return;
   run.replansUsed++;
@@ -725,9 +790,10 @@ async function runNode(run, node) {
 // One attempt: loop model ↔ tools until the model answers without tool calls.
 async function agentLoop(run, node, st, messages, { defs, model }) {
   const settings = run.settings;
+  const maxToolRounds = settings.hostedDirect ? HOSTED_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
 
-  for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-    const forceFinal = Boolean(defs) && round === MAX_TOOL_ROUNDS;
+  for (let round = 0; round <= maxToolRounds; round++) {
+    const forceFinal = Boolean(defs) && round === maxToolRounds;
     if (forceFinal) {
       messages.push({
         role: 'user',
@@ -750,7 +816,7 @@ async function agentLoop(run, node, st, messages, { defs, model }) {
       apiKey: settings.apiKey,
       ...routeModel(node.model, { preferFree: settings.preferFree, needTools: Boolean(defs) }),
       reasoning: model?.reasoning && node.reasoning !== 'none' ? { effort: node.reasoning } : undefined,
-      maxTokens: EFFORT_MAX_TOKENS[node.reasoning] || 8000,
+      maxTokens: maxTokensForNode(settings, node),
       signal: run.abort.signal,
       plugins: nodePdfPlugin(run, node),
       tools: defs || undefined,
@@ -787,7 +853,7 @@ async function agentLoop(run, node, st, messages, { defs, model }) {
         st.toolLog.push({ note, by: 'agent' });
         emit(run, 'node_note', { id: node.id, text: note, by: 'agent' });
         const results = [];
-        for (const [i, c] of textCalls.slice(0, 8).entries()) {
+        for (const [i, c] of textCalls.slice(0, textToolCallLimit(run)).entries()) {
           const call = { id: `textcall_${round}_${i}`, function: { name: c.name, arguments: JSON.stringify(c.args) } };
           const result = await execToolCall(run, node.id, st, call, 'agent');
           results.push(`### Result of ${c.name}\n${truncate(result, 4000)}`);
@@ -844,13 +910,22 @@ function parseTextToolCalls(content) {
   return calls;
 }
 
+function maxTokensForNode(settings, node) {
+  const table = settings.hostedDirect ? HOSTED_EFFORT_MAX_TOKENS : EFFORT_MAX_TOKENS;
+  return table[node.reasoning] || table.none;
+}
+
+function textToolCallLimit(run) {
+  return run.settings.hostedDirect ? 4 : 8;
+}
+
 // Last line of defense: a FINAL answer still containing tool markup. Execute
 // the leaked calls so no work is lost, then strip the markup from the text.
 async function scrubLeakedToolMarkup(run, node, st, content) {
   const textCalls = parseTextToolCalls(content);
   if (!textCalls.length) return content;
   const saved = [];
-  for (const [i, c] of textCalls.slice(0, 8).entries()) {
+  for (const [i, c] of textCalls.slice(0, textToolCallLimit(run)).entries()) {
     const call = { id: `finaltext_${i}`, function: { name: c.name, arguments: JSON.stringify(c.args) } };
     await execToolCall(run, node.id, st, call, 'agent');
     if (c.name === 'write_file' && c.args.path) saved.push(String(c.args.path).trim());
@@ -1019,7 +1094,8 @@ async function synthesisPhase(run, ctx, date) {
   const usable = plan.nodes.filter((n) => ['done', 'warn'].includes(run.nodes[n.id].status));
 
   if (!usable.length) {
-    throw new Error('All agents failed — nothing to synthesize.');
+    const reason = plan.nodes.map((n) => run.nodes[n.id]?.error).find(Boolean);
+    throw new Error(reason ? `All agents failed: ${reason}` : 'All agents failed — nothing to synthesize.');
   }
 
   // Single-node runs can skip synthesis entirely: the node output IS the answer.
