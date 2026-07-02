@@ -11,6 +11,7 @@ import { CATALOG, ensureLivePricing } from './src/models.js';
 import { createRun, executeRun, resolveApproval, workspacePath } from './src/orchestrator.js';
 import { initSandbox } from './src/tools.js';
 import { executeMockRun } from './src/mock.js';
+import { IS_VERCEL } from './src/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -107,6 +108,10 @@ async function handleApi(req, res, url) {
     return startRun(req, res);
   }
 
+  if (method === 'POST' && pathname === '/api/run-stream') {
+    return startRunStream(req, res);
+  }
+
   if (method === 'POST' && /^\/api\/runs\/[\w-]+\/stop$/.test(pathname)) {
     const run = activeRuns.get(pathname.split('/')[3]);
     if (run) run.abort.abort();
@@ -141,14 +146,71 @@ async function handleApi(req, res, url) {
 
 async function startRun(req, res) {
   const body = await readBody(req);
+  const prepared = await prepareRun(body, { forceNoApproval: IS_VERCEL });
+  if (prepared.error) return sendJson(res, prepared.status, { error: prepared.error });
+  const { run, conversation, mock } = prepared;
+
+  activeRuns.set(run.id, run);
+  trimRuns();
+
+  await persistUserTurn(conversation, run);
+
+  const engine = mock ? executeMockRun : executeRun;
+  engine(run, conversation, { onFinished: finishConversation(conversation) }).catch((err) => console.error('run crashed:', err));
+
+  sendJson(res, 200, { runId: run.id, conversationId: conversation.id, title: conversation.title });
+}
+
+async function startRunStream(req, res) {
+  const body = await readBody(req);
+  const prepared = await prepareRun(body, { forceNoApproval: IS_VERCEL });
+  if (prepared.error) return sendJson(res, prepared.status, { error: prepared.error });
+  const { run, conversation, mock } = prepared;
+
+  activeRuns.set(run.id, run);
+  trimRuns();
+  await persistUserTurn(conversation, run);
+
+  res.writeHead(200, sseHeaders());
+  writeSse(res, null, { type: 'meta', data: { runId: run.id, conversationId: conversation.id, title: conversation.title } });
+  run.subscribers.add(res);
+
+  let ended = false;
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {}
+  }, 15000);
+  req.on('close', () => {
+    if (!ended && !run.endedAt) run.abort.abort();
+    clearInterval(heartbeat);
+    run.subscribers.delete(res);
+  });
+
+  try {
+    const engine = mock ? executeMockRun : executeRun;
+    await engine(run, conversation, { onFinished: finishConversation(conversation) });
+  } catch (err) {
+    console.error('streamed run crashed:', err);
+  } finally {
+    ended = true;
+    clearInterval(heartbeat);
+    run.subscribers.delete(res);
+    if (!res.writableEnded) res.end();
+    trimRuns();
+  }
+}
+
+async function prepareRun(body, { forceNoApproval }) {
   const task = String(body.message || '').trim();
-  if (!task) return sendJson(res, 400, { error: 'message required' });
+  if (!task) return { status: 400, error: 'message required' };
 
   const settings = await store.loadSettings();
   settings.apiKey = process.env.OPENROUTER_API_KEY || settings.apiKey;
+  if (forceNoApproval) settings.approvePlans = false;
   const mock = FORCE_MOCK || settings.mock;
   if (!mock && !settings.apiKey) {
-    return sendJson(res, 400, { error: 'No OpenRouter API key configured. Open Settings (gear icon) and add one, or enable mock mode.' });
+    return { status: 400, error: 'No OpenRouter API key configured. Open Settings (gear icon) and add one, or enable mock mode.' };
   }
 
   let conversation = body.conversationId ? await store.loadConversation(body.conversationId) : null;
@@ -161,39 +223,33 @@ async function startRun(req, res) {
   }
 
   const run = createRun({ conversation, task, attachments, settings });
-  activeRuns.set(run.id, run);
-  trimRuns();
+  return { run, conversation, mock };
+}
 
+async function persistUserTurn(conversation, run) {
   // Persist the user turn immediately so a refresh mid-run shows it.
-  conversation.messages.push({ role: 'user', content: task, attachments: attachments.map((a) => ({ id: a.id, name: a.name })) });
+  conversation.messages.push({ role: 'user', content: run.task, attachments: run.attachments.map((a) => ({ id: a.id, name: a.name })) });
   await store.saveConversation(conversation);
+}
 
-  const onFinished = async (snap) => {
+function finishConversation(conversation) {
+  return async (snap) => {
     conversation.messages.push({ role: 'assistant', content: snap.answer, run: snap });
     conversation.cost = (conversation.cost || 0) + snap.totals.cost;
     await store.saveConversation(conversation);
   };
-
-  const engine = mock ? executeMockRun : executeRun;
-  engine(run, conversation, { onFinished }).catch((err) => console.error('run crashed:', err));
-
-  sendJson(res, 200, { runId: run.id, conversationId: conversation.id, title: conversation.title });
 }
 
 function handleEvents(req, res, runId) {
   const run = activeRuns.get(runId);
   if (!run) return sendJson(res, 404, { error: 'run not found (server restarted?)' });
 
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
+  res.writeHead(200, sseHeaders());
 
   // Replay history (supports EventSource reconnection via Last-Event-ID).
   const from = Number(req.headers['last-event-id'] ?? -1) + 1;
   for (let i = from; i < run.events.length; i++) {
-    res.write(`id: ${i}\ndata: ${JSON.stringify(run.events[i])}\n\n`);
+    writeSse(res, i, run.events[i]);
   }
   run.subscribers.add(res);
 
@@ -202,6 +258,20 @@ function handleEvents(req, res, runId) {
     clearInterval(heartbeat);
     run.subscribers.delete(res);
   });
+}
+
+function sseHeaders() {
+  return {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  };
+}
+
+function writeSse(res, id, ev) {
+  if (id != null) res.write(`id: ${id}\n`);
+  res.write(`data: ${JSON.stringify(ev)}\n\n`);
 }
 
 function trimRuns() {
@@ -213,6 +283,8 @@ function trimRuns() {
 
 function maskSettings(settings) {
   const masked = { ...settings };
+  if (IS_VERCEL) masked.approvePlans = false;
+  masked.hosted = IS_VERCEL;
   masked.hasApiKey = Boolean(process.env.OPENROUTER_API_KEY || settings.apiKey);
   masked.apiKey = settings.apiKey ? `…${settings.apiKey.slice(-4)}` : '';
   masked.hasBraveKey = Boolean(settings.braveApiKey);
