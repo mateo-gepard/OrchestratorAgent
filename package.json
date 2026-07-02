@@ -1,0 +1,14 @@
+{
+  "name": "maestro",
+  "version": "1.0.0",
+  "description": "Local multi-model agent orchestration with a Claude-style UI, powered by OpenRouter. Zero dependencies.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "mock": "MOCK=1 node server.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}

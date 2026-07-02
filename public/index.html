@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Maestro</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext y='19' font-size='19'%3E✦%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+  <!-- KaTeX (formulas) + Mermaid (diagrams) — loaded from CDN, gracefully absent offline -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="sb-head">
+        <div class="logo"><span class="logo-mark">✦</span><span class="logo-name">Maestro</span></div>
+      </div>
+      <button id="newChatBtn" class="new-chat">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        New chat
+      </button>
+      <div class="sb-label">Chats</div>
+      <nav id="convoList" class="convo-list"></nav>
+      <div class="sb-foot">
+        <div class="avatar" id="avatar">M</div>
+        <div class="sb-foot-meta">
+          <div class="sb-foot-name" id="footName">Mateo</div>
+          <div class="sb-foot-plan">Local · OpenRouter</div>
+        </div>
+        <button class="icon-btn" id="themeBtn" title="Toggle theme"></button>
+        <button class="icon-btn" id="settingsBtn" title="Settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <main id="main" class="empty">
+      <div id="chatScroll">
+        <div id="hero">
+          <div class="hero-mark">✦</div>
+          <h1 id="greeting" class="hero-title">Good evening</h1>
+          <p class="hero-sub">Describe a task. Maestro plans it, routes each step to the right model, and runs agents in parallel — with real web search, code execution, and file output. Every deliverable is verified by actually testing it.</p>
+        </div>
+        <div id="chat"></div>
+      </div>
+
+      <div id="composerWrap">
+        <div id="attachChips" class="attach-chips"></div>
+        <div class="composer" id="composer">
+          <textarea id="input" rows="1" placeholder="Assign a task to the fleet…"></textarea>
+          <div class="composer-bar">
+            <button class="icon-btn" id="attachBtn" title="Attach files">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <span class="composer-model" id="composerModel"></span>
+            <div class="composer-spacer"></div>
+            <button id="sendBtn" class="send-btn" title="Send" disabled>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="suggestions" class="suggestions"></div>
+        <div class="footnote">Maestro routes across a fleet of models via OpenRouter. Costs are tracked per run.</div>
+      </div>
+      <input type="file" id="fileInput" multiple hidden />
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+  <script src="app.js"></script>
+</body>
+</html>
