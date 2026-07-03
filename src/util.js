@@ -86,23 +86,34 @@ function tryParseJson(slice) {
   return undefined;
 }
 
+// The only characters JSON permits after a backslash inside a string.
+const JSON_ESCAPES = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u']);
+
 // Escape raw control characters that appear INSIDE string values (models often
-// write multi-line text with real newlines instead of \n), and strip trailing
-// commas. Structural characters outside strings are left untouched.
+// write multi-line text with real newlines instead of \n), repair invalid
+// backslash escapes, and strip trailing commas. Structural characters outside
+// strings are left untouched.
 function repairJson(s) {
   let out = '';
   let inString = false;
-  let escaped = false;
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
-    if (escaped) {
-      out += ch;
-      escaped = false;
-      continue;
-    }
     if (ch === '\\') {
-      out += ch;
-      escaped = true;
+      const next = s[i + 1];
+      if (inString && JSON_ESCAPES.has(next)) {
+        // A real escape — copy the pair through untouched (and don't let the
+        // escaped char, e.g. \", toggle the in-string state).
+        out += ch + next;
+        i++;
+      } else if (inString) {
+        // A backslash the model failed to escape ("Leitzinsen und\Eventuell",
+        // a Windows path, a trailing "\"). Double it into a literal backslash
+        // so the string parses instead of blowing up JSON.parse.
+        out += '\\\\';
+      } else {
+        // Backslashes don't occur outside strings in valid JSON; leave as-is.
+        out += ch;
+      }
       continue;
     }
     if (ch === '"') {
