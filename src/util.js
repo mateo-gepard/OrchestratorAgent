@@ -22,30 +22,104 @@ export function truncateMiddle(text, max) {
   return `${text.slice(0, head)}\n\n[…${text.length - max} characters elided…]\n\n${text.slice(-tail)}`;
 }
 
-// Pull the first balanced JSON object out of model output. Tolerates code
-// fences, preamble text, and trailing commentary.
+// Pull a balanced JSON object out of model output. Tolerates code fences,
+// preamble/trailing commentary, doubled fences, and the JSON defects models
+// actually emit (raw newlines/tabs inside strings, trailing commas). Returns
+// the LARGEST object that parses — the intended top-level object, never a
+// nested fragment. (An earlier version returned the first parseable {…}, so a
+// malformed outer object made it silently fall through to an inner node object,
+// which then looked like a plan with "no task nodes".)
 export function extractJson(text) {
   if (!text) throw new Error('empty response');
+
+  // Candidate regions: every fenced block first (a model may wrap its whole
+  // answer in an outer fence and nest ```json inside, so a single fence can be
+  // empty or decorative), then the raw text as a fallback.
   const candidates = [];
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) candidates.push(fenced[1]);
+  const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let m;
+  while ((m = fenceRe.exec(text))) {
+    if (m[1] && m[1].trim()) candidates.push(m[1]);
+  }
   candidates.push(text);
 
   for (const source of candidates) {
+    const objects = [];
     let start = source.indexOf('{');
     while (start !== -1) {
       const slice = balancedSlice(source, start);
       if (slice) {
-        try {
-          return JSON.parse(slice);
-        } catch {
-          // fall through, try the next opening brace
+        const parsed = tryParseJson(slice);
+        if (parsed !== undefined) {
+          objects.push({ len: slice.length, value: parsed });
+          // The whole object parsed — skip its interior so nested objects don't
+          // compete with (and can't be mistaken for) their container.
+          start = source.indexOf('{', start + slice.length);
+          continue;
         }
       }
       start = source.indexOf('{', start + 1);
     }
+    if (objects.length) {
+      objects.sort((a, b) => b.len - a.len);
+      return objects[0].value;
+    }
   }
   throw new Error('no parseable JSON object found in model output');
+}
+
+// Strict parse, then one lenient repair pass for the defects models emit.
+function tryParseJson(slice) {
+  try {
+    return JSON.parse(slice);
+  } catch {
+    /* try repair */
+  }
+  const repaired = repairJson(slice);
+  if (repaired !== slice) {
+    try {
+      return JSON.parse(repaired);
+    } catch {
+      /* give up on this slice */
+    }
+  }
+  return undefined;
+}
+
+// Escape raw control characters that appear INSIDE string values (models often
+// write multi-line text with real newlines instead of \n), and strip trailing
+// commas. Structural characters outside strings are left untouched.
+function repairJson(s) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      out += ch;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\n') out += '\\n';
+      else if (ch === '\r') out += '\\r';
+      else if (ch === '\t') out += '\\t';
+      else out += ch;
+      continue;
+    }
+    out += ch;
+  }
+  return out.replace(/,(\s*[}\]])/g, '$1');
 }
 
 function balancedSlice(source, start) {
