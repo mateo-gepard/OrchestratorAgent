@@ -14,6 +14,18 @@
       "port": 4646
     },
     {
+      "name": "maestro-mock-dbg",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "MOCK=1",
+        "PORT=4646",
+        "MAESTRO_DATA_DIR=/tmp/maestro-dbg-data",
+        "node",
+        "server.js"
+      ],
+      "port": 4646
+    },
+    {
       "name": "maestro-mock-memtree",
       "runtimeExecutable": "env",
       "runtimeArgs": [
