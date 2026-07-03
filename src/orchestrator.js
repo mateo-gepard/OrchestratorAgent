@@ -166,7 +166,6 @@ export async function executeRun(run, conversation, { onFinished }) {
     await prepareWorkspace(run);
     if (run.settings.hostedDirect) createHostedDirectPlan(run);
     else if (run.presetPlan) adoptPresetPlan(run);
-    else if (shouldFastPath(run)) createFastPlan(run);
     else await planPhase(run, ctx, date);
     await approvalGate(run);
     await executeGraph(run);
@@ -358,63 +357,6 @@ async function planPhase(run, ctx, date) {
     run.nodes[node.id] = newNodeState();
   }
   emit(run, 'plan', plan);
-}
-
-// Fast path: a short single-intent task skips the planner call entirely — one
-// cheap agent with the tools the task implies, still verified, still able to
-// escalate on failure. This removes the 15-30s planning latency and planner
-// cost on exactly the tasks where a pipeline can't add value.
-//
-// Deliberately narrow: quick questions, small transforms, follow-up tweaks.
-// Anything that CREATES an artifact or spans multiple steps goes to the
-// planner — orchestration is the product; the fast path routing real work to
-// a single haiku node makes Maestro indistinguishable from a bare model. The
-// blocklists are bilingual (EN + DE) because the user works in German.
-const FAST_PATH_MAX_CHARS = 120;
-const FAST_PATH_MODEL = 'anthropic/claude-haiku-4.5';
-const FAST_PATH_BLOCK = [
-  // multi-step, open-ended, or research work
-  /\b(and then|after that|report|memo|research\w*|compare|analy[sz]\w*|dashboard|pipeline|investigate|in parallel|step by step)\b/i,
-  /\b(und dann|danach|anschließend|bericht\w*|recherch\w*|vergleich\w*|analys\w*|untersuch\w*|parallel|schritt für schritt)\b/i,
-  // artifact creation — needs planner model routing, not a lone haiku node
-  /\b(build|creat\w*|implement\w*|develop\w*|design\w*|write\w*|code|program\w*|website|web ?app|app|game|script|tool|simulation|prototype)\b/i,
-  /\b(bau\w*|erstell\w*|entwickl\w*|entwirf\w*|implementier\w*|programmier\w*|schreib\w*|webseite|spiel\w*|skript\w*|simulation\w*|prototyp\w*)\b/i,
-];
-
-export function shouldFastPath(run) {
-  if (run.attachments.length) return false;
-  const t = run.task.trim();
-  if (t.length > FAST_PATH_MAX_CHARS || t.includes('\n')) return false;
-  return !FAST_PATH_BLOCK.some((re) => re.test(t));
-}
-
-function createFastPlan(run) {
-  emit(run, 'phase', { phase: 'planning' });
-  const available = new Set(availableModels().map((m) => m.id));
-  const model = available.has(FAST_PATH_MODEL) ? FAST_PATH_MODEL : run.settings.fallbackModel;
-  const node = {
-    id: 'n1',
-    title: 'Complete request',
-    objective: 'Complete the user request end-to-end.',
-    model,
-    reasoning: getModel(model)?.reasoning ? 'low' : 'none',
-    tools: hostedDirectTools(run),
-    depends_on: [],
-    uses_attachments: [],
-    instructions:
-      'Complete the original user request end-to-end in one pass. Use tools only where the task actually needs them (live/current facts → web; code, data, files, charts → code). Deliver the complete final result.',
-    deliverables: ['The complete, correct result of the user request, with any requested files saved to the workspace.'],
-    verification: 'The output completely and correctly fulfils the user request; any delivered code was executed and works; any claimed files exist in the workspace.',
-  };
-  run.plan = {
-    analysis: 'Short single-intent task — planned via the fast path (no planner call).',
-    strategy: 'Fast path: one verified agent, escalation on failure.',
-    synthesis: 'none',
-    synthesis_instructions: '',
-    nodes: [node],
-  };
-  run.nodes[node.id] = newNodeState();
-  emit(run, 'plan', run.plan);
 }
 
 // A caller (e.g. the benchmark runner) supplied the plan directly — validate
