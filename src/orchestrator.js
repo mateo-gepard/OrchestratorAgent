@@ -363,18 +363,29 @@ async function planPhase(run, ctx, date) {
 // Fast path: a short single-intent task skips the planner call entirely — one
 // cheap agent with the tools the task implies, still verified, still able to
 // escalate on failure. This removes the 15-30s planning latency and planner
-// cost on exactly the tasks where a pipeline can't add value, which is what
-// keeps Maestro never-worse than asking a single model directly.
-const FAST_PATH_MAX_CHARS = 220;
+// cost on exactly the tasks where a pipeline can't add value.
+//
+// Deliberately narrow: quick questions, small transforms, follow-up tweaks.
+// Anything that CREATES an artifact or spans multiple steps goes to the
+// planner — orchestration is the product; the fast path routing real work to
+// a single haiku node makes Maestro indistinguishable from a bare model. The
+// blocklists are bilingual (EN + DE) because the user works in German.
+const FAST_PATH_MAX_CHARS = 120;
 const FAST_PATH_MODEL = 'anthropic/claude-haiku-4.5';
+const FAST_PATH_BLOCK = [
+  // multi-step, open-ended, or research work
+  /\b(and then|after that|report|memo|research\w*|compare|analy[sz]\w*|dashboard|pipeline|investigate|in parallel|step by step)\b/i,
+  /\b(und dann|danach|anschließend|bericht\w*|recherch\w*|vergleich\w*|analys\w*|untersuch\w*|parallel|schritt für schritt)\b/i,
+  // artifact creation — needs planner model routing, not a lone haiku node
+  /\b(build|creat\w*|implement\w*|develop\w*|design\w*|write\w*|code|program\w*|website|web ?app|app|game|script|tool|simulation|prototype)\b/i,
+  /\b(bau\w*|erstell\w*|entwickl\w*|entwirf\w*|implementier\w*|programmier\w*|schreib\w*|webseite|spiel\w*|skript\w*|simulation\w*|prototyp\w*)\b/i,
+];
 
-function shouldFastPath(run) {
+export function shouldFastPath(run) {
   if (run.attachments.length) return false;
   const t = run.task.trim();
   if (t.length > FAST_PATH_MAX_CHARS || t.includes('\n')) return false;
-  // Multi-part or open-ended work still deserves a real plan.
-  if (/\b(and then|after that|report|memo|research|compare|analy[sz]e|dashboard|pipeline|investigate|in parallel)\b/i.test(t)) return false;
-  return true;
+  return !FAST_PATH_BLOCK.some((re) => re.test(t));
 }
 
 function createFastPlan(run) {
