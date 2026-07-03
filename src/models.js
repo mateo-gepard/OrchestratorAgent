@@ -278,6 +278,27 @@ export function routeModel(id, { preferFree, needTools } = {}) {
   return { model: m.freeVariant, fallbackModel: id };
 }
 
+// "Cheap first, escalate on proof of failure": when a node fails verification,
+// the retry moves one capability tier up instead of re-rolling the same dice.
+// This is what makes routing safe — the quality floor is the top of the ladder.
+const ESCALATION = {
+  budget: 'anthropic/claude-haiku-4.5',
+  mid: 'anthropic/claude-sonnet-4.5',
+  frontier: 'anthropic/claude-opus-4.5',
+};
+
+export function escalationModel(currentId) {
+  const cur = byId.get(currentId);
+  if (!cur) return null;
+  const target = ESCALATION[cur.tier];
+  if (!target || target === currentId) return null;
+  const t = byId.get(target);
+  if (!t || t.available === false) return null;
+  // Never "escalate" to something cheaper than what just failed.
+  if (t.priceOut <= cur.priceOut) return null;
+  return target;
+}
+
 export function estimateCost(modelId, tokensIn, tokensOut) {
   const m = byId.get(modelId);
   if (!m) return 0;

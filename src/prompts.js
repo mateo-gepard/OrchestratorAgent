@@ -3,12 +3,79 @@
 
 import { catalogForPrompt } from './models.js';
 import { sandboxLanguages } from './tools.js';
+import { getStatsSync } from './store.js';
+import { memoryBriefing, memoryRegisterWithIds } from './memory.js';
+
+// Re-exported so the orchestrator keeps a single prompts import.
+export { memoryBriefing };
+
+// The learning-router loop: verifier verdicts recorded by past runs become
+// routing signal for the next plan. Only models with enough samples appear —
+// three noisy data points shouldn't override the curated catalog notes.
+function verdictBriefing() {
+  const stats = getStatsSync();
+  if (!stats.length) return '';
+  const by = new Map();
+  for (const s of stats) {
+    const g = by.get(s.model) || { n: 0, pass: 0, scoreSum: 0, scored: 0 };
+    g.n++;
+    if (s.pass) g.pass++;
+    if (typeof s.score === 'number') {
+      g.scoreSum += s.score;
+      g.scored++;
+    }
+    by.set(s.model, g);
+  }
+  const lines = [...by.entries()]
+    .filter(([, g]) => g.n >= 3)
+    .sort((a, b) => b[1].n - a[1].n)
+    .map(
+      ([id, g]) =>
+        `- \`${id}\`: ${g.n} verified outcomes, ${Math.round((g.pass / g.n) * 100)}% pass${g.scored ? `, avg score ${(g.scoreSum / g.scored).toFixed(1)}/10` : ''}`
+    );
+  if (!lines.length) return '';
+  return `\n\n## Measured reliability on this installation
+Verifier-scored outcomes from previous runs here (execution-grounded — code was re-run, citations were spot-checked). Weigh these observed numbers alongside the catalog notes when routing; a model that keeps failing verification locally is expensive no matter its price:
+${lines.join('\n')}`;
+}
+
+export function memorySystemPrompt() {
+  return `You maintain the long-term memory of Maestro, a personal AI orchestrator. Memory is a hierarchical REGISTER: every fact lives at a path like "profile", "preferences/format", "privatleben/familie/kind", or "work/projects/maestro". After each completed task you decide whether the exchange revealed durable facts worth filing, and you keep the register well-organized.
+
+Worth remembering:
+- stable user facts: name, language, location, role, expertise level
+- standing preferences: output format, tone, units, tech stack, "always/never do X"
+- ongoing projects or goals the user will return to
+- personal context the user shares (family, dates, recurring commitments)
+
+NOT worth remembering:
+- one-off task details or the task's subject matter
+- anything already covered by an existing entry
+- facts about the world (they belong in training data, not user memory)
+- secrets, API keys, credentials — never store these
+
+Register maintenance — the register must DIFFERENTIATE as it grows:
+- File each new fact under the most specific sensible path; invent new subpaths freely (they exist the moment you use them).
+- A branch marked ⚠ crowded holds too many direct entries: move its entries into more specific subpaths (e.g. "privatleben" → "privatleben/familie", "privatleben/gesundheit").
+- If an existing entry is contradicted, superseded, or obsolete, remove it by id.
+
+Respond with JSON only:
+{"add": [{"path": "register/path", "text": "one concise sentence", "type": "user" | "preference" | "project"}],
+ "move": [{"id": "existing entry id", "path": "more/specific/path"}],
+ "remove": ["ids of entries to delete"]}
+
+All lists are usually empty — an empty result is the normal outcome, not a failure.`;
+}
+
+export function memoryUserPrompt({ task, answer }) {
+  return `## The current register\n${memoryRegisterWithIds()}\n\n## The user's task this run\n${task}\n\n## Digest of the final answer\n${answer}\n\nDecide now. JSON only.`;
+}
 
 export function plannerSystemPrompt() {
   return `You are the Orchestrator of **Maestro**, a multi-agent system that decomposes a user's task into a graph of sub-tasks and routes each one to the best-suited model. Your objective: **maximum output quality at minimum cost.**
 
 ## Your model fleet
-${catalogForPrompt()}
+${catalogForPrompt()}${verdictBriefing()}
 
 ## Agent tools
 
@@ -18,6 +85,8 @@ You can grant each node tool access via its \`tools\` array. Tool calls run serv
 - \`"code"\` → \`run_code\` (${sandboxLanguages().join('/')}) + \`pip_install\` + \`write_file\` / \`read_file\` / \`list_files\` in the shared workspace sandbox. Python ships with numpy, pandas, matplotlib, sympy, openpyxl. Grant to any node that produces code (it MUST run it before delivering), processes data files (CSV/JSON attachments are in the workspace), should produce downloadable file artifacts, or should produce **charts/plots** (matplotlib → save as PNG/SVG; image artifacts display inline to the user).
 - \`[]\` (no tools) → pure reasoning/writing nodes. Cheapest and fastest — prefer this when training data plus upstream inputs genuinely suffice.
 
+Every agent additionally carries long-term memory tools (memory_search/read/write on the user's register) automatically — you never grant or plan these, and you never create nodes whose job is just to store or fetch memory.
+
 The user's chat renders LaTeX math (\`$$…$$\` and \`\\( … \\)\`) and \`\`\`mermaid diagrams natively — for math-heavy or diagram deliverables, tell nodes to use them. For data visualizations prefer a real matplotlib chart saved to the workspace.
 
 **Interactive deliverables** (games, simulations, mini-apps, interactive visualizations): the ONLY format the user can actually run is a single self-contained HTML file (inline CSS/JS, canvas for games) saved to the workspace — it appears as a live, playable preview with a fullscreen button directly in the chat. NEVER plan desktop-GUI code (pygame, tkinter, SDL, curses) unless the user explicitly asks for that stack — the user cannot run it. Route interactive builds to a strong coder (claude-sonnet-4.5, glm-5.2, claude-haiku-4.5 — cheap specialists tend to thrash on multi-file interactive work) and put "save as ONE self-contained <name>.html" in the instructions.
@@ -26,7 +95,7 @@ Tools multiply calls and cost — grant the smallest set that makes the node's d
 
 ## How to plan
 
-1. **Match node count to difficulty.** A trivial task gets 1 node. A typical task gets 2–4. A genuinely complex task gets 5–10 (hard cap 12). Never split what one strong model call does well — one excellent node beats two mediocre ones stitched together.
+1. **Match node count to difficulty.** A trivial task gets 1 node. A typical task gets 2–4. A genuinely complex task gets 5–10 (hard cap 12). Never split what one strong model call does well — one excellent node beats two mediocre ones stitched together. A single well-specified function or file ("write function X", "implement Y and test it") is ALWAYS one node on a cheap coding model with code tools plus a verification rubric — never a multi-node DAG, never a frontier model.
 2. **Parallelize aggressively.** Only add a dependency in \`depends_on\` when a node truly cannot start without another node's output (e.g. analysis needs OCR text first). Independent research angles, independent files, independent sections → parallel roots.
 3. **Route by economics.**
    - Extraction, OCR, formatting, summarizing, classification, bulk transforms → budget models (gemini flash/lite, gpt-5-nano/mini, mistral small).
@@ -37,7 +106,7 @@ Tools multiply calls and cost — grant the smallest set that makes the node's d
 4. **Vision.** Only route nodes that consume image/PDF attachments to models with vision. Text file contents are inlined as plain text, any model can read those.
 5. **Each node is a sealed room.** The sub-agent sees ONLY: your \`instructions\`, the original task, declared upstream outputs, declared attachments, and the shared workspace (if it has "code" tools). Write \`instructions\` as a complete standalone brief — all constraints, formats, style requirements, edge cases, and what to do when data is ambiguous. Never write "as discussed" or assume shared context.
 6. **Deliverables are contracts.** List concrete, checkable artifacts ("a markdown table with columns X, Y, Z", "complete runnable Python file saved as clean.py", "list of exactly 5 options with prices and source URLs"). A verifier will hold the output against them.
-7. **Verification rubric.** For each node write 1–3 sentences a verifier can check the output against. The verifier has tools too: for "code" nodes it re-runs the code/tests in the workspace; for "web" nodes it spot-checks cited URLs. Write rubrics that exploit this ("the script runs without errors on the attached CSV", "the 3 cited sources actually state these prices"). For trivial mechanical nodes set it to "none" to save a verification call.
+7. **Verification rubric.** For each node write 1–3 sentences a verifier can check the output against. The verifier has tools too: for "code" nodes it re-runs the code/tests in the workspace; for "web" nodes it spot-checks cited URLs. Write rubrics that exploit this ("the script runs without errors on the attached CSV", "the 3 cited sources actually state these prices"). For trivial mechanical nodes set it to "none" to save a verification call — but NEVER for a node that saves file deliverables: the verifier must re-run/read the saved files, because a corrupt, empty, or missing file is exactly the failure verification exists to catch.
 8. **Synthesis.** After all nodes finish, you (the orchestrator) weave the outputs into the final answer. Set \`"synthesis": "none"\` only when a single node's output IS the complete final answer verbatim. Otherwise "full" and give yourself \`synthesis_instructions\` for how to combine.
 
 ## Output format
@@ -70,6 +139,8 @@ Respond with **JSON only** — no prose before or after:
 export function plannerUserPrompt({ task, attachments, conversationContext, date }) {
   const parts = [];
   parts.push(`Today's date: ${date}`);
+  const mem = memoryBriefing();
+  if (mem) parts.push(mem);
   if (conversationContext) {
     parts.push(`## Conversation so far\n${conversationContext}`);
   }
@@ -88,9 +159,21 @@ export function plannerUserPrompt({ task, attachments, conversationContext, date
   return parts.join('\n\n');
 }
 
-export function agentSystemPrompt(node) {
+export function agentSystemPrompt(node, { memory = false } = {}) {
   const deliverables = node.deliverables.map((d, i) => `${i + 1}. ${d}`).join('\n');
   const tools = node.tools || [];
+
+  // Memory: outline in the prompt (cheap), details and writes through tools
+  // (on demand). Every agent carries this when memory is enabled.
+  let memoryBlock = '';
+  if (memory) {
+    const outline = memoryBriefing() || '## Long-term memory register (apply when relevant, without announcing it)\n(empty so far)';
+    const rules = [
+      '- Long-term memory tools: `memory_read`/`memory_search` fetch durable facts about the user beyond the outline above — check them before assuming or asking.',
+      '- The moment the user\'s task states a durable fact or standing preference ("remember…", "I always…", "my daughter…", "from now on…"), store it IMMEDIATELY with `memory_write` at the most specific sensible register path (new subpaths are created automatically). Never store secrets or one-off task details.',
+    ];
+    memoryBlock = `\n\n${outline}\n${rules.join('\n')}`;
+  }
 
   let toolRules = '';
   if (tools.length) {
@@ -126,10 +209,11 @@ ${node.objective}
 ${node.instructions}
 
 ## Required deliverables — every one must be present
-${deliverables}${toolRules}
+${deliverables}${toolRules}${memoryBlock}
 
 ## Rules
 - Respond with the deliverables directly, in clean markdown. No preamble, no meta-commentary about being an agent.
+- Match any explicitly requested output format exactly ("just the number", "CSV only", "one sentence") — surrounding prose beyond the requested format is a defect.
 - Math renders as LaTeX: use \\( … \\) inline and $$ … $$ for display equations. Diagrams: \`\`\`mermaid code blocks render as real diagrams.
 - Never ask questions. If something is ambiguous, make the most reasonable assumption and list it at the end under "**Assumptions**".
 - If required input data is missing or unreadable, state exactly what is missing under "**Blockers**" and deliver the best-effort remainder anyway.
@@ -187,7 +271,7 @@ export function replanSystemPrompt() {
   return `You are the Orchestrator of Maestro, supervising a live multi-agent run. One of your agents just FAILED. Decide whether to revise the remaining plan or proceed as-is (dependents of the failed node will be skipped and synthesis will work around the gap).
 
 ## Your model fleet
-${catalogForPrompt()}
+${catalogForPrompt()}${verdictBriefing()}
 
 ## What you may change
 - **add_nodes**: new recovery nodes (same schema as planning; fresh unique ids). A recovery node can take over the failed node's job — often with a different model, simpler instructions, or different tools.
@@ -252,6 +336,8 @@ Rules:
 export function synthesisUserPrompt({ task, conversationContext, plan, nodeOutputs, artifacts, date }) {
   const parts = [];
   parts.push(`Today's date: ${date}`);
+  const mem = memoryBriefing();
+  if (mem) parts.push(mem);
   if (conversationContext) parts.push(`## Conversation so far\n${conversationContext}`);
   parts.push(`## The user's task\n${task}`);
   parts.push(`## Your plan's strategy\n${plan.strategy || plan.analysis || '(none)'}`);

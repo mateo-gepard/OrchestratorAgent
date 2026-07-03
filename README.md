@@ -44,6 +44,8 @@ Environment variables:
 | `MAESTRO_DATA_DIR` | Overrides the runtime data directory. |
 | `MAESTRO_ACCESS_CODE` | When set, every `/api/*` request must present this code (header `x-maestro-access` or cookie `maestro_access`). The UI prompts for it once. Use it on any public deployment. |
 | `VERCEL` | Set by Vercel; switches storage and hosted-run behavior. |
+| `TURSO_DATABASE_URL` | Cloud database URL (`libsql://…`). The Vercel Turso integration injects this automatically — connect the database to the project and hosted persistence (chats, files, memory, settings, cost ledger) turns on without further config. Overrides the Settings value. |
+| `TURSO_AUTH_TOKEN` | Cloud database auth token; injected by the Turso integration alongside the URL. |
 
 ## What It Does
 
@@ -68,6 +70,14 @@ runtime limit and cannot reliably share in-memory run state across separate
 requests, so hosted runs use one streamed request and one focused direct agent.
 That avoids the expensive planner/verifier/synthesis fan-out and is designed to
 finish inside the 300 second function limit.
+
+With the Turso cloud database connected (see env vars above), hosted mode stops
+being amnesiac: conversations and settings persist across cold starts and can
+be continued, uploads survive (≤4 MB), the hosted agent gets the full memory
+tool set plus post-run extraction (on an 8 s leash so it never threatens the
+time limit), and every run lands in the cost ledger. Without the database,
+hosted memory stays read-only-outline and nothing persists — by design, not by
+accident.
 
 ## Runtime Modes
 
@@ -158,6 +168,7 @@ Important constants:
 | `POST` | `/api/runs/:id/plan` | Approves/cancels a plan-review gate, optionally with node edits. |
 | `GET` | `/api/events/:runId` | SSE event replay/subscribe endpoint for local runs. |
 | `GET` | `/api/runs/:id/files/*` | Serves workspace artifacts with sandboxing/CSP headers. |
+| `DELETE` | `/api/memories/:id` | Forgets one long-term memory entry; returns the remaining list. |
 
 Artifact serving:
 
@@ -352,16 +363,56 @@ The frontend is vanilla HTML/CSS/JS in `public/`.
 
 ## Persistence
 
-`src/store.js` stores everything as flat files under `DATA_ROOT`.
+`src/store.js` is a facade over two backends:
+
+- **Local flat files** under `DATA_ROOT` — always on, zero-config.
+- **Cloud libSQL/Turso database** (`src/db.js`, plain-fetch HTTP client, no
+  dependencies) — optional. Configure via Settings → Cloud database or the
+  `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` env vars. When connected,
+  conversations, uploaded files (≤4 MB), settings, memory, verifier verdicts,
+  and a per-run cost ledger (`runs` table) are written through to the cloud
+  and read from it — chats continue across restarts, machines, and hosted
+  deployments. On first connect, existing local history is migrated up
+  automatically. If the cloud is unreachable, Maestro degrades to local files
+  instead of breaking. The schema self-migrates (`CREATE TABLE IF NOT EXISTS`)
+  on every connect.
 
 | Path | Contents |
 |---|---|
-| `data/settings.json` | API keys, model choices, preferences, mock flag. |
+| `data/settings.json` | API keys, model choices, preferences, mock flag, cloud DB credentials (the one thing that must stay local to bootstrap). |
 | `data/conversations/*.json` | Chat messages, assistant run snapshots, cost. |
 | `data/files/*.bin` | Uploaded file bytes. |
 | `data/files/*.json` | Upload metadata and text previews. |
 | `data/workspaces/<runId>/` | Staged attachments and generated artifacts. |
 | `data/sandbox/venv/` | Python virtualenv for code execution. |
+| `data/stats.json` | Verifier verdicts per model (pass/score/escalation) — fed back into the planner prompt as measured reliability once a model has 3+ samples. |
+| `data/memory.json` | The hierarchical memory register (see below). |
+| `data/runs.jsonl` | Append-only cost ledger: one row per run (cost, frontier baseline, savings, tokens). |
+
+## Memory: the hierarchical register
+
+Long-term memory is a **register**: every durable fact lives at a path like
+`preferences/format`, `privatleben/familie/kind`, or `work/projects/maestro`
+(`src/memory.js`). The register differentiates as it grows — branches with too
+many direct entries are flagged ⚠ crowded, and the post-run extractor moves
+their entries into more specific subpaths.
+
+Token economics by design:
+
+- Every prompt (planner, synthesis, every agent) gets only a compact **outline**
+  of the register. While the register is small the outline *is* the full
+  content (no tool round wasted); past ~1600 chars it compresses to truncated
+  facts and branch summaries, prioritizing recently used branches.
+- **Every agent** carries four memory tools automatically (never planned):
+  `memory_search` / `memory_read` pull details on demand (reads bump `usedAt`,
+  which drives outline priority), `memory_write` stores a durable fact the
+  moment it appears mid-run, `memory_forget` deletes by id.
+- After each run, a cheap extractor model reviews the exchange against the
+  register with ids: it files what agents missed, prunes contradicted entries,
+  and splits crowded branches (`add` / `move` / `remove` ops).
+
+Every entry is visible and deletable in Settings; secrets are banned from
+storage by prompt; a global toggle turns the whole system off.
 
 File classification:
 
@@ -387,6 +438,10 @@ Defaults live in `src/store.js`.
 | `approvePlans` | `true` | Local plan-review gate. Forced off on Vercel. |
 | `preferFree` | `true` | Try OpenRouter `:free` variants first. |
 | `mock` | `false` | Simulate runs without model calls. |
+| `maxRunCost` | `0` | Hard per-run spend ceiling in USD; the run aborts cleanly (partial work saved) when reached. `0` disables the cap. |
+| `memoryEnabled` | `true` | The hierarchical memory register: outline injected into every prompt, memory tools granted to every agent, post-run extraction/reorganization. Viewable/deletable in Settings. |
+| `tursoUrl` | empty | Cloud database URL (`libsql://…`). Empty = local files only. |
+| `tursoToken` | empty | Cloud database auth token. Env vars `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` override both. |
 
 Hosted UI settings are persisted in browser localStorage under
 `maestro-hosted-settings` and sent with each `/api/run-stream` call, because

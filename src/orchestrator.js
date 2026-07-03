@@ -12,8 +12,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chat } from './openrouter.js';
-import { getModel, ensureLivePricing, availableModels, routeModel, estimateCost } from './models.js';
-import { loadFile } from './store.js';
+import { getModel, ensureLivePricing, availableModels, routeModel, estimateCost, escalationModel } from './models.js';
+import { loadFile, recordVerdict, updateMemories, cloudStatus } from './store.js';
 import { extractJson, rid, truncate, truncateMiddle } from './util.js';
 import { toolDefs, execTool, summarizeArgs, listWorkspace } from './tools.js';
 import { DATA_ROOT } from './paths.js';
@@ -27,6 +27,9 @@ import {
   replanUserPrompt,
   synthesisSystemPrompt,
   synthesisUserPrompt,
+  memoryBriefing,
+  memorySystemPrompt,
+  memoryUserPrompt,
 } from './prompts.js';
 
 const MAX_NODES = 12;
@@ -38,6 +41,10 @@ const HOSTED_TOOL_ROUNDS = 4;
 const MAX_VERIFY_ROUNDS = 4; // tool rounds the verifier gets
 const MAX_REPLANS = 2; // graph adaptations per run
 const TOOL_RESULT_CAP = 1500; // chars of a tool result kept in the log/events
+// Tool results from finished rounds get compressed to this size before the
+// next round — the agent re-reads its whole transcript every round, so stale
+// full-size results are the single biggest token sink in tool-heavy nodes.
+const TOOL_DIET_CAP = 1500;
 // The verifier re-reads its whole context every round — keep it on a diet:
 // it judges against the rubric, it doesn't need the full 60k-char transcript.
 const VERIFY_OUTPUT_CAP = 24_000; // chars of node output shown to the verifier (head+tail)
@@ -127,6 +134,14 @@ function addUsage(run, usage) {
   // the (frontier) orchestrator model — the delta is what routing saved.
   run.totals.baselineCost += estimateCost(run.totals.baselineModel, usage.tokensIn || 0, usage.tokensOut || 0);
   emit(run, 'usage', { ...run.totals });
+
+  // Hard cost ceiling: the one guarantee that makes handing an agent your API
+  // key tolerable. 0 disables the cap.
+  const cap = Number(run.settings.maxRunCost) || 0;
+  if (cap > 0 && run.totals.cost >= cap && !run.abort.signal.aborted) {
+    run.stopMessage = `Budget cap reached: this run spent $${run.totals.cost.toFixed(2)} of its $${cap.toFixed(2)} per-run limit. Partial work was saved.`;
+    run.abort.abort();
+  }
 }
 
 function conversationContext(conversation) {
@@ -151,6 +166,7 @@ export async function executeRun(run, conversation, { onFinished }) {
     await prepareWorkspace(run);
     if (run.settings.hostedDirect) createHostedDirectPlan(run);
     else if (run.presetPlan) adoptPresetPlan(run);
+    else if (shouldFastPath(run)) createFastPlan(run);
     else await planPhase(run, ctx, date);
     await approvalGate(run);
     await executeGraph(run);
@@ -160,6 +176,7 @@ export async function executeRun(run, conversation, { onFinished }) {
     run.status = 'done';
     run.endedAt = Date.now();
     emit(run, 'phase', { phase: 'done' });
+    await memoryPhase(run);
   } catch (err) {
     run.status = run.abort.signal.aborted ? 'stopped' : 'error';
     run.endedAt = Date.now();
@@ -343,6 +360,52 @@ async function planPhase(run, ctx, date) {
   emit(run, 'plan', plan);
 }
 
+// Fast path: a short single-intent task skips the planner call entirely — one
+// cheap agent with the tools the task implies, still verified, still able to
+// escalate on failure. This removes the 15-30s planning latency and planner
+// cost on exactly the tasks where a pipeline can't add value, which is what
+// keeps Maestro never-worse than asking a single model directly.
+const FAST_PATH_MAX_CHARS = 220;
+const FAST_PATH_MODEL = 'anthropic/claude-haiku-4.5';
+
+function shouldFastPath(run) {
+  if (run.attachments.length) return false;
+  const t = run.task.trim();
+  if (t.length > FAST_PATH_MAX_CHARS || t.includes('\n')) return false;
+  // Multi-part or open-ended work still deserves a real plan.
+  if (/\b(and then|after that|report|memo|research|compare|analy[sz]e|dashboard|pipeline|investigate|in parallel)\b/i.test(t)) return false;
+  return true;
+}
+
+function createFastPlan(run) {
+  emit(run, 'phase', { phase: 'planning' });
+  const available = new Set(availableModels().map((m) => m.id));
+  const model = available.has(FAST_PATH_MODEL) ? FAST_PATH_MODEL : run.settings.fallbackModel;
+  const node = {
+    id: 'n1',
+    title: 'Complete request',
+    objective: 'Complete the user request end-to-end.',
+    model,
+    reasoning: getModel(model)?.reasoning ? 'low' : 'none',
+    tools: hostedDirectTools(run),
+    depends_on: [],
+    uses_attachments: [],
+    instructions:
+      'Complete the original user request end-to-end in one pass. Use tools only where the task actually needs them (live/current facts → web; code, data, files, charts → code). Deliver the complete final result.',
+    deliverables: ['The complete, correct result of the user request, with any requested files saved to the workspace.'],
+    verification: 'The output completely and correctly fulfils the user request; any delivered code was executed and works; any claimed files exist in the workspace.',
+  };
+  run.plan = {
+    analysis: 'Short single-intent task — planned via the fast path (no planner call).',
+    strategy: 'Fast path: one verified agent, escalation on failure.',
+    synthesis: 'none',
+    synthesis_instructions: '',
+    nodes: [node],
+  };
+  run.nodes[node.id] = newNodeState();
+  emit(run, 'plan', run.plan);
+}
+
 // A caller (e.g. the benchmark runner) supplied the plan directly — validate
 // and adopt it without spending a planner call.
 function adoptPresetPlan(run) {
@@ -397,7 +460,11 @@ function hostedDirectInstructions(run, tools) {
   const toolLine = tools.length
     ? `Use the available ${tools.join(' + ')} tools only when they are necessary for the final answer.`
     : 'No tools are needed unless the task explicitly requires external files or live facts.';
-  return `Complete the original user request end-to-end in one pass.
+  // Without the cloud DB, hosted nodes get no memory tools (nothing would
+  // persist) — inject only the outline. With it, runNode grants the tools and
+  // agentSystemPrompt injects the outline, so skip it here to avoid doubling.
+  const mem = run.settings.memoryEnabled !== false && !cloudStatus().connected ? memoryBriefing() : '';
+  return `${mem ? `${mem}\n\n` : ''}Complete the original user request end-to-end in one pass.
 
 You are running on the hosted Vercel deployment, which has a strict 300-second function limit. Prioritize finishing the concrete deliverable over broad exploration.
 
@@ -746,12 +813,14 @@ async function runNode(run, node) {
   const st = run.nodes[node.id];
   const settings = run.settings;
   const started = Date.now();
-  const model = getModel(node.model);
-  const defs = toolDefs(node.tools);
+  // Every agent carries the memory tools when memory is on — reads on demand,
+  // writes the moment a durable fact appears (not just post-run extraction).
+  const memory = memoryToolsOn(run);
+  const defs = toolDefs(memory ? [...(node.tools || []), 'memory'] : node.tools);
 
   const messages = [
-    { role: 'system', content: agentSystemPrompt(node) },
-    { role: 'user', content: await buildNodeInput(run, node, model) },
+    { role: 'system', content: agentSystemPrompt(node, { memory }) },
+    { role: 'user', content: await buildNodeInput(run, node, getModel(node.model)) },
   ];
 
   const maxAttempts = 1 + settings.maxRetries;
@@ -761,7 +830,7 @@ async function runNode(run, node) {
     st.output = '';
     emit(run, 'node_status', { id: node.id, status: 'running', attempt });
 
-    const content = await agentLoop(run, node, st, messages, { defs, model });
+    const content = await agentLoop(run, node, st, messages, { defs, model: getModel(node.model) });
     st.output = content;
 
     // Verify the deliverables unless the planner waived it.
@@ -771,9 +840,26 @@ async function runNode(run, node) {
       const verdict = await verifyNode(run, node, content);
       st.verify = verdict;
       emit(run, 'verify_result', { id: node.id, ...verdict });
+      // Every verdict is routing signal: which model delivered on which kind
+      // of work. Accumulates in data/stats.json for the router to learn from.
+      recordVerdict({
+        ts: Date.now(), model: node.model, tools: node.tools || [],
+        attempt, score: verdict.score, pass: verdict.pass, escalatedFrom: node.escalatedFrom || null,
+      }).catch(() => {});
 
       if (!verdict.pass && attempt < maxAttempts) {
-        emit(run, 'node_status', { id: node.id, status: 'retry', attempt, feedback: verdict.feedback });
+        // Cheap first, escalate on proof of failure: the retry runs one
+        // capability tier up — the same dice rarely land differently.
+        const esc = escalationModel(node.model);
+        emit(run, 'node_status', { id: node.id, status: 'retry', attempt, feedback: verdict.feedback, escalatedTo: esc || undefined });
+        if (esc) {
+          node.escalatedFrom = node.model;
+          node.model = esc;
+          const note = `Verifier rejected the output — escalating the retry from ${node.escalatedFrom} to ${esc}.`;
+          st.toolLog.push({ note, by: 'system' });
+          emit(run, 'node_note', { id: node.id, text: note, by: 'system' });
+          emit(run, 'plan', run.plan); // refresh model chips in the UI
+        }
         messages.push({ role: 'assistant', content });
         messages.push({
           role: 'user',
@@ -882,6 +968,14 @@ async function agentLoop(run, node, st, messages, { defs, model }) {
 
     if (!res.toolCalls.length || forceFinal) {
       return defs ? await scrubLeakedToolMarkup(run, node, st, res.content) : res.content;
+    }
+
+    // Context diet: results from earlier rounds have served their purpose —
+    // shrink them so the next round doesn't pay for the full transcript again.
+    for (const m of messages) {
+      if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > TOOL_DIET_CAP) {
+        m.content = truncate(m.content, TOOL_DIET_CAP);
+      }
     }
 
     // Tool round: whatever text streamed was working commentary, not the
@@ -1099,6 +1193,52 @@ function nodePdfPlugin(run, node) {
   // The free pdf-text engine covers digital PDFs; models with native PDF
   // support bypass the parser anyway.
   return hasPdf ? [{ id: 'file-parser', pdf: { engine: 'pdf-text' } }] : undefined;
+}
+
+// --- phase 4: memory extraction ---------------------------------------------------
+
+function memoryToolsOn(run) {
+  const s = run.settings;
+  if (s.memoryEnabled === false || s.mock) return false;
+  // Hosted memory is only real when it persists: tmpfs forgets on every cold
+  // start, so hosted runs get memory tools only with the cloud DB connected.
+  if (s.hostedDirect && !cloudStatus().connected) return false;
+  return true;
+}
+
+// After a successful run, a cheap model reviews the exchange against the
+// register: it files durable facts agents didn't write themselves, prunes
+// contradicted entries, and differentiates crowded branches into subpaths.
+// Strictly best-effort: it can never fail a run, and "no changes" is the
+// expected outcome for most tasks.
+async function memoryPhase(run) {
+  const s = run.settings;
+  if (s.memoryEnabled === false || s.mock || run.presetPlan) return;
+  // Hosted extraction only when the cloud DB makes the write durable — and on
+  // a short leash so it can never push the run into the platform time limit.
+  if (s.hostedDirect && !cloudStatus().connected) return;
+  if (!run.answer || run.abort.signal.aborted) return;
+  try {
+    const res = await chat({
+      apiKey: s.apiKey,
+      ...routeModel(s.verifierModel, { preferFree: s.preferFree }),
+      maxTokens: 800,
+      signal: AbortSignal.timeout(s.hostedDirect ? 8_000 : 20_000),
+      messages: [
+        { role: 'system', content: memorySystemPrompt() },
+        { role: 'user', content: memoryUserPrompt({ task: run.task, answer: truncateMiddle(run.answer, 4000) }) },
+      ],
+    });
+    addUsage(run, res);
+    const ops = extractJson(res.content);
+    const counts = { added: (ops.add || []).length, moved: (ops.move || []).length, removed: (ops.remove || []).length };
+    if (counts.added || counts.moved || counts.removed) {
+      await updateMemories(ops);
+      emit(run, 'memory_updated', counts);
+    }
+  } catch {
+    // Memory is a bonus, never a blocker.
+  }
 }
 
 // --- phase 3: synthesis ---------------------------------------------------------

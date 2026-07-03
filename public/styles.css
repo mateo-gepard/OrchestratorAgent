@@ -634,6 +634,51 @@ textarea, input, select { font-family: inherit; }
   border-radius: 20px;
   cursor: help;
 }
+.mem-list {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mem-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.mem-type {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.mem-text { flex: 1; }
+.mem-del {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+}
+.mem-del:hover { color: var(--red); }
+
+.sb-saved {
+  margin: 6px 14px 8px;
+  padding: 5px 10px;
+  border-radius: 20px;
+  background: var(--green-soft);
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: center;
+  cursor: help;
+}
 .run-error {
   margin: 10px 16px 14px;
   background: var(--red-soft);

@@ -79,3 +79,21 @@ function balancedSlice(source, start) {
 export function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+
+// Normalize a memory register path: lowercase kebab segments joined by "/",
+// e.g. "Privatleben / Familie/Kind " → "privatleben/familie/kind".
+export function normPath(raw) {
+  return String(raw || '')
+    .toLowerCase()
+    .split('/')
+    .map((s) =>
+      s
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/[^\p{L}\p{N}_-]+/gu, '')
+        .slice(0, 40)
+    )
+    .filter(Boolean)
+    .slice(0, 5)
+    .join('/');
+}

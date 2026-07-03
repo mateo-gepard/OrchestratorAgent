@@ -441,6 +441,10 @@ async function main() {
           ...row,
           runId: run.id,
           status: snap?.status || 'unknown',
+          // Plan shape: answers "did the run actually fan out, and to which
+          // models?" — without this the mode label alone can hide a plan that
+          // collapsed to a single node.
+          plan: (snap?.plan?.nodes || []).map((n) => ({ id: n.id, model: n.model, tools: n.tools, verification: n.verification !== 'none' })),
           pass: s.pass,
           score: s.score,
           feedback: s.feedback,

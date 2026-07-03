@@ -1,5 +1,6 @@
 node_modules/
 data/
 bench/results/
+.tmp-test/
 .DS_Store
 *.log

@@ -3,8 +3,11 @@
 // isolated workspace directory under data/workspaces/<runId>.
 //
 // Tool groups (the planner assigns these per node):
-//   "web"  → web_search, fetch_url
-//   "code" → run_code, pip_install, write_file, read_file, list_files
+//   "web"    → web_search, fetch_url
+//   "code"   → run_code, pip_install, write_file, read_file, list_files
+//   "memory" → memory_search, memory_read, memory_write, memory_forget
+//              (granted automatically to every agent when memory is enabled —
+//              the planner never assigns it; defined in src/memory.js)
 //
 // The Python runtime prefers the sandbox venv at data/sandbox/venv (created by
 // initSandbox on server start; ships numpy/pandas/matplotlib/sympy). Compiled
@@ -14,6 +17,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { DATA_ROOT } from './paths.js';
+import { memoryToolDefs, execMemoryTool, MEMORY_TOOL_NAMES } from './memory.js';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 const FETCH_CAP = 20_000;
@@ -184,6 +188,7 @@ const DEFS = {
       },
     },
   ],
+  memory: () => memoryToolDefs(),
 };
 
 export function toolDefs(groups) {
@@ -199,6 +204,7 @@ export function toolDefs(groups) {
 
 // ctx: { workspace, signal, settings }
 export async function execTool(name, args, ctx) {
+  if (MEMORY_TOOL_NAMES.has(name)) return execMemoryTool(name, args);
   switch (name) {
     case 'web_search':
       return webSearch(args, ctx);
@@ -237,6 +243,14 @@ export function summarizeArgs(name, args) {
         return args.path;
       case 'list_files':
         return '';
+      case 'memory_search':
+        return `"${args.query}"`;
+      case 'memory_read':
+        return args.path || '(whole register)';
+      case 'memory_write':
+        return `${args.path || '(root)'}: ${String(args.text || '').slice(0, 70)}`;
+      case 'memory_forget':
+        return args.id;
       default:
         return JSON.stringify(args).slice(0, 90);
     }

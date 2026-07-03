@@ -80,15 +80,30 @@ async function handleApi(req, res, url) {
       settings: maskSettings(settings),
       models: CATALOG,
       conversations: await store.listConversations(),
+      memories: store.getMemoriesSync(),
       mockForced: FORCE_MOCK,
     });
   }
 
+  if (method === 'DELETE' && pathname.startsWith('/api/memories/')) {
+    const memories = await store.deleteMemory(pathname.split('/').pop());
+    return sendJson(res, 200, { memories });
+  }
+
+  // Manual register entry from the Settings UI.
+  if (method === 'POST' && pathname === '/api/memories') {
+    const body = await readBody(req);
+    if (!String(body.text || '').trim()) return sendJson(res, 400, { error: 'text required' });
+    const memories = await store.updateMemories({ add: [{ path: body.path, text: body.text, type: body.type }] });
+    return sendJson(res, 200, { memories });
+  }
+
   if (method === 'POST' && pathname === '/api/settings') {
     const body = await readBody(req);
-    // An empty key field means "keep the stored key".
+    // An empty secret field means "keep the stored value".
     if (body.apiKey === '') delete body.apiKey;
     if (body.braveApiKey === '') delete body.braveApiKey;
+    if (body.tursoToken === '') delete body.tursoToken;
     const settings = await store.saveSettings(body);
     return sendJson(res, 200, { settings: maskSettings(settings) });
   }
@@ -260,8 +275,10 @@ function applyHostedSettings(settings, patch) {
   }
   if (typeof patch.maxParallel !== 'undefined') settings.maxParallel = Math.min(8, Math.max(1, Number(patch.maxParallel) || settings.maxParallel));
   if (typeof patch.maxRetries !== 'undefined') settings.maxRetries = Math.min(3, Math.max(0, Number(patch.maxRetries) || 0));
+  if (typeof patch.maxRunCost !== 'undefined') settings.maxRunCost = Math.max(0, Number(patch.maxRunCost) || 0);
   if (typeof patch.preferFree === 'boolean') settings.preferFree = patch.preferFree;
   if (typeof patch.mock === 'boolean') settings.mock = patch.mock;
+  if (typeof patch.memoryEnabled === 'boolean') settings.memoryEnabled = patch.memoryEnabled;
 }
 
 async function persistUserTurn(conversation, run) {
@@ -274,7 +291,11 @@ function finishConversation(conversation) {
   return async (snap) => {
     conversation.messages.push({ role: 'assistant', content: snap.answer, run: snap });
     conversation.cost = (conversation.cost || 0) + snap.totals.cost;
+    // Lifetime savings ledger: what routing saved vs frontier-only, summed
+    // per conversation and surfaced as a running total in the sidebar.
+    conversation.saved = (conversation.saved || 0) + Math.max(0, (snap.totals.baselineCost || 0) - (snap.totals.cost || 0));
     await store.saveConversation(conversation);
+    await store.recordRun(snap, conversation.id).catch(() => {});
   };
 }
 
@@ -345,6 +366,10 @@ function maskSettings(settings) {
   masked.apiKey = settings.apiKey ? `…${settings.apiKey.slice(-4)}` : '';
   masked.hasBraveKey = Boolean(settings.braveApiKey);
   masked.braveApiKey = settings.braveApiKey ? `…${settings.braveApiKey.slice(-4)}` : '';
+  masked.hasTursoToken = Boolean(process.env.TURSO_AUTH_TOKEN || settings.tursoToken);
+  masked.tursoToken = settings.tursoToken ? `…${settings.tursoToken.slice(-4)}` : '';
+  masked.tursoUrl = process.env.TURSO_DATABASE_URL || settings.tursoUrl || '';
+  masked.cloudConnected = store.cloudStatus().connected;
   return masked;
 }
 
