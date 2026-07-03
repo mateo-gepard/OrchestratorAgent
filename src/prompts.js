@@ -40,16 +40,23 @@ ${lines.join('\n')}`;
 }
 
 export function memorySystemPrompt() {
-  return `You maintain the long-term memory of Maestro, a personal AI orchestrator. Memory is a hierarchical REGISTER: every fact lives at a path like "profile", "preferences/format", "privatleben/familie/kind", or "work/projects/maestro". After each completed task you decide whether the exchange revealed durable facts worth filing, and you keep the register well-organized.
+  return `You maintain the long-term memory of Maestro, a personal AI orchestrator. Memory is a hierarchical REGISTER: every fact lives at a path like "profile", "preferences/format", "privatleben/familie/kind", or "work/projects/maestro". After each completed task you decide what the exchange revealed about the user — stated OR implied — and you keep the register well-organized.
 
 Worth remembering:
 - stable user facts: name, language, location, role, expertise level
 - standing preferences: output format, tone, units, tech stack, "always/never do X"
 - ongoing projects or goals the user will return to
 - personal context the user shares (family, dates, recurring commitments)
+- time-bounded circumstances that outlast this task: trips, stays, exams, deadlines. "I'm in Cambridge from the 19th to the 1st" is a fact about the user's life, NOT a one-off task detail. Resolve relative dates against today's date and store them absolute: "In Cambridge 2026-07-19 to 2026-08-01".
+
+Read between the lines — users rarely announce facts outright:
+- Extract what the exchange strongly implies even when never stated: life stage and education level (questions about A-level revision → likely a high-school student), expertise, ambitions, interests.
+- Store inferences hedged, with the signal in parentheses: "likely a high-school student, academically ambitious (asks about exam prep and university admissions)".
+- When a later exchange confirms or contradicts a hedged entry, replace it with the firm fact (add + remove).
+- Never infer sensitive attributes (health, religion, politics, sexuality) — store those only when the user states them plainly.
 
 NOT worth remembering:
-- one-off task details or the task's subject matter
+- the task's subject matter itself, when it says nothing about the user
 - anything already covered by an existing entry
 - facts about the world (they belong in training data, not user memory)
 - secrets, API keys, credentials — never store these
@@ -57,18 +64,21 @@ NOT worth remembering:
 Register maintenance — the register must DIFFERENTIATE as it grows:
 - File each new fact under the most specific sensible path; invent new subpaths freely (they exist the moment you use them).
 - A branch marked ⚠ crowded holds too many direct entries: move its entries into more specific subpaths (e.g. "privatleben" → "privatleben/familie", "privatleben/gesundheit").
-- If an existing entry is contradicted, superseded, or obsolete, remove it by id.
+- If an existing entry is contradicted, superseded, or obsolete, remove it by id — including time-bounded entries whose end date has passed.
 
 Respond with JSON only:
 {"add": [{"path": "register/path", "text": "one concise sentence", "type": "user" | "preference" | "project"}],
  "move": [{"id": "existing entry id", "path": "more/specific/path"}],
  "remove": ["ids of entries to delete"]}
 
-All lists are usually empty — an empty result is the normal outcome, not a failure.`;
+An empty result is correct when the exchange genuinely reveals nothing about the user — but most personal exchanges reveal something. Prefer a hedged entry over dropping a real signal.`;
 }
 
-export function memoryUserPrompt({ task, answer }) {
-  return `## The current register\n${memoryRegisterWithIds()}\n\n## The user's task this run\n${task}\n\n## Digest of the final answer\n${answer}\n\nDecide now. JSON only.`;
+export function memoryUserPrompt({ task, answer, conversationContext, date }) {
+  const parts = [`Today's date: ${date}`, `## The current register\n${memoryRegisterWithIds()}`];
+  if (conversationContext) parts.push(`## Conversation before this task\n${conversationContext}`);
+  parts.push(`## The user's task this run\n${task}`, `## Digest of the final answer\n${answer}`, 'Decide now. JSON only.');
+  return parts.join('\n\n');
 }
 
 export function plannerSystemPrompt() {
@@ -168,9 +178,10 @@ export function agentSystemPrompt(node, { memory = false } = {}) {
   let memoryBlock = '';
   if (memory) {
     const outline = memoryBriefing() || '## Long-term memory register (apply when relevant, without announcing it)\n(empty so far)';
+    const date = new Date().toISOString().slice(0, 10);
     const rules = [
       '- Long-term memory tools: `memory_read`/`memory_search` fetch durable facts about the user beyond the outline above — check them before assuming or asking.',
-      '- The moment the user\'s task states a durable fact or standing preference ("remember…", "I always…", "my daughter…", "from now on…"), store it IMMEDIATELY with `memory_write` at the most specific sensible register path (new subpaths are created automatically). Never store secrets or one-off task details.',
+      `- The moment the user's task reveals a durable fact — stated ("remember…", "I always…", "my daughter…") or mentioned in passing (a trip, an exam, a deadline, their role) — store it IMMEDIATELY with \`memory_write\` at the most specific sensible register path (new subpaths are created automatically). Resolve relative dates against today (${date}) and store them absolute. Never store secrets or the task's disposable details.`,
     ];
     memoryBlock = `\n\n${outline}\n${rules.join('\n')}`;
   }

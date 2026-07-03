@@ -176,7 +176,7 @@ export async function executeRun(run, conversation, { onFinished }) {
     run.status = 'done';
     run.endedAt = Date.now();
     emit(run, 'phase', { phase: 'done' });
-    await memoryPhase(run);
+    await memoryPhase(run, ctx, date);
   } catch (err) {
     run.status = run.abort.signal.aborted ? 'stopped' : 'error';
     run.endedAt = Date.now();
@@ -1211,7 +1211,7 @@ function memoryToolsOn(run) {
 // contradicted entries, and differentiates crowded branches into subpaths.
 // Strictly best-effort: it can never fail a run, and "no changes" is the
 // expected outcome for most tasks.
-async function memoryPhase(run) {
+async function memoryPhase(run, ctx, date) {
   const s = run.settings;
   if (s.memoryEnabled === false || s.mock || run.presetPlan) return;
   // Hosted extraction only when the cloud DB makes the write durable — and on
@@ -1226,7 +1226,15 @@ async function memoryPhase(run) {
       signal: AbortSignal.timeout(s.hostedDirect ? 8_000 : 20_000),
       messages: [
         { role: 'system', content: memorySystemPrompt() },
-        { role: 'user', content: memoryUserPrompt({ task: run.task, answer: truncateMiddle(run.answer, 4000) }) },
+        {
+          role: 'user',
+          content: memoryUserPrompt({
+            task: run.task,
+            answer: truncateMiddle(run.answer, 4000),
+            conversationContext: ctx ? truncateMiddle(ctx, 6000) : '',
+            date,
+          }),
+        },
       ],
     });
     addUsage(run, res);
