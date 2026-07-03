@@ -75,8 +75,14 @@ async function handleApi(req, res, url) {
   const { pathname } = url;
   const method = req.method;
 
+  // Serverless instances each own their DB connection. If an instance's
+  // cold-start connect flaked, only bootstrap used to heal it, so routes like
+  // conversation-load fell back to empty tmpfs and 404'd a chat that lived in
+  // the cloud. Heal here for every /api/ route — a no-op when already
+  // connected, so it costs nothing in the common case.
+  await store.ensureCloud().catch(() => {});
+
   if (method === 'GET' && pathname === '/api/bootstrap') {
-    await store.ensureCloud().catch(() => {});
     const [settings, conversations, memories] = await Promise.all([
       store.loadSettings(),
       store.listConversations(),
