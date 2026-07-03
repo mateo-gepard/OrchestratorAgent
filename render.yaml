@@ -1,0 +1,37 @@
+# Render Blueprint — full-pipeline Maestro on the free tier.
+#
+# Runs the real pipeline (planner → parallel agents → verifier → adaptive
+# replanning → synthesis) with no serverless request limit, unlike Vercel.
+# Durable state lives in Turso, so the free tier's ephemeral disk is fine —
+# nothing important is stored locally.
+#
+# Deploy: Render Dashboard → New → Blueprint → connect this repo → it reads
+# this file → fill in the four secret env vars → Apply. Or deploy manually as
+# a Web Service from the Dockerfile (this file is optional then).
+#
+# Free-tier notes:
+#   - 512 MB RAM / 0.1 CPU. Heavy matplotlib/pandas tasks are tight but work.
+#   - Spins down after ~15 min idle; the next request cold-starts in ~30–60 s
+#     (Turso means nothing is lost across a spin-down).
+
+services:
+  - type: web
+    name: maestro
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    # `/` serves the app shell and does not require the access code, so the
+    # health check passes even with MAESTRO_ACCESS_CODE set.
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      # Render injects PORT automatically; server.js binds to it.
+      - key: OPENROUTER_API_KEY
+        sync: false          # set as a secret in the dashboard
+      - key: MAESTRO_ACCESS_CODE
+        sync: false          # REQUIRED on a public URL — gates every /api call
+      - key: TURSO_DATABASE_URL
+        sync: false          # same value as your Vercel/Turso setup
+      - key: TURSO_AUTH_TOKEN
+        sync: false

@@ -1,480 +1,443 @@
 # Maestro
 
 Maestro is a zero-dependency Node.js multi-model agent orchestrator with a
-Claude-style browser UI. It plans tasks, routes work across an OpenRouter model
-fleet, runs agents with web/code tools, verifies deliverables, tracks cost, and
-streams the whole run into an interactive DAG.
+Claude-style browser UI. It plans a task, routes each step to the cheapest
+plausible model, runs agents with real web and code tools, **verifies every
+deliverable by actually testing it**, escalates only on proven failure, tracks
+cost against a frontier-only baseline, and streams the whole run into an
+interactive DAG.
+
+**The core claim — the "no-brainer" property:** ask Maestro instead of any
+single model and you can only win. The quality floor is the frontier (escalation
+ends there), the average cost is the budget tier, and the output is verified
+rather than hoped. Meanwhile a per-installation dataset of *which model actually
+delivered on which kind of work* compounds with every run.
 
 The project is intentionally small: one Node HTTP server, one vanilla frontend,
-flat-file persistence, and a Vercel catch-all entry for hosted deployment.
+zero runtime dependencies, flat-file persistence with an optional cloud
+database, and a single Vercel function entry for hosted deployment.
+
+---
 
 ## Quick Start
 
 ```bash
-npm start
-# or
-node server.js
+npm start          # or: node server.js
 ```
 
-Open `http://localhost:4646`, click Settings, add an OpenRouter API key, and
-send a task.
+Open `http://localhost:4646`, click the gear (Settings), add an OpenRouter API
+key, and send a task.
 
-Run without model spend:
+Run the full UI without spending anything on models:
 
 ```bash
-npm run mock
-# or
-MOCK=1 node server.js
+npm run mock       # or: MOCK=1 node server.js
 ```
 
-Requirements:
+**Requirements**
 
-- Node.js `>=18.17`
+- Node.js `>=18.17` (no dependencies to install — `npm install` is optional)
 - `python3` on `PATH` for Python code execution
-- Optional host runtimes for more code tools: `node`, `bash`, `ruby`, `perl`,
-  `java`, `swift`, `cc`, `c++`, `go`, `rustc`
+- Optional host runtimes for more `run_code` languages: `node`, `bash`, `ruby`,
+  `perl`, `java`, `swift`, `cc`, `c++`, `go`, `rustc`
 
-Environment variables:
+**Environment variables**
 
 | Variable | Purpose |
 |---|---|
-| `OPENROUTER_API_KEY` | Overrides the key stored in settings. Required for live runs unless mock mode is enabled. |
+| `OPENROUTER_API_KEY` | Overrides the key stored in settings. Required for live runs unless mock mode is on. |
 | `MOCK=1` | Forces simulated runs globally. |
 | `PORT` | Local HTTP port, default `4646`. |
 | `MAESTRO_DATA_DIR` | Overrides the runtime data directory. |
-| `MAESTRO_ACCESS_CODE` | When set, every `/api/*` request must present this code (header `x-maestro-access` or cookie `maestro_access`). The UI prompts for it once. Use it on any public deployment. |
+| `MAESTRO_ACCESS_CODE` | When set, every `/api/*` request must present this code (header `x-maestro-access` or cookie `maestro_access`). The UI prompts for it once. **Set this on any public deployment.** |
 | `VERCEL` | Set by Vercel; switches storage and hosted-run behavior. |
-| `TURSO_DATABASE_URL` | Cloud database URL (`libsql://…`). The Vercel Turso integration injects this automatically — connect the database to the project, redeploy, and hosted persistence (chats, files, memory, settings, cost ledger) turns on without further config. Overrides the Settings value. Prefixed names work too: any env var whose value is a `libsql://` URL (or `*.turso.io` host) is picked up, e.g. `STORAGE_TURSO_DATABASE_URL` from an integration with a custom prefix. `/api/settings` reports the detected name as `cloudEnvVar`. |
-| `TURSO_AUTH_TOKEN` | Cloud database auth token; injected by the Turso integration alongside the URL. Prefixed variants (`<PREFIX>_AUTH_TOKEN` next to the URL var) are detected automatically. |
+| `TURSO_DATABASE_URL` | Cloud database URL (`libsql://…`). Turns on cloud persistence (chats, files, memory, settings, stats, cost ledger). Overrides the Settings value. **Prefixed names are auto-detected** — any env var whose value is a `libsql://` URL or `*.turso.io` host is picked up (e.g. `Maestro_TURSO_DATABASE_URL` from a Vercel integration with a custom prefix). `/api/settings` reports the resolved name as `cloudEnvVar`. |
+| `TURSO_AUTH_TOKEN` | Cloud database auth token. Prefixed variants next to the URL var (`<PREFIX>_AUTH_TOKEN`) are detected automatically. |
 
-## What It Does
+---
 
-Local mode runs the full orchestration pipeline:
+## The Idea in One Picture
+
+Maestro's differentiator is not "route to cheap models" — that's a commodity a
+strong single model beats on hard tasks. It's the **cheap-first, escalate-on-
+proof loop** plus **execution-grounded verification**:
 
 ```mermaid
 flowchart TD
-  A["User task + attachments"] --> B["Planner model creates DAG"]
-  B --> C["Optional plan review"]
-  C --> D["Parallel agent execution"]
-  D --> E["Tool loops: web and code"]
-  E --> F["Verifier model checks deliverables"]
-  F -->|pass or warn| G["Artifacts collected"]
-  F -->|hard failure| H["Adaptive replan"]
-  H --> D
-  G --> I["Synthesis model writes final answer"]
-  I --> J["Saved conversation + downloadable artifacts"]
+  A["Task"] --> B{"Short single-intent?"}
+  B -->|yes| F["Fast path: one cheap agent, no planner"]
+  B -->|no| P["Planner (frontier) builds a cost-aware DAG"]
+  P --> R["Optional plan review"]
+  R --> X["Parallel agents, cheapest plausible model each"]
+  F --> V
+  X --> V["Verifier tests each deliverable"]
+  V -->|score ≥ 5| S["Synthesis → final answer"]
+  V -->|fail| E["Escalate one tier up and retry"]
+  E --> V
+  S --> L["Every verdict logged → learning router\nEvery run logged → savings ledger"]
 ```
 
-Hosted Vercel mode is deliberately different. Vercel functions have a hard
-runtime limit and cannot reliably share in-memory run state across separate
-requests, so hosted runs use one streamed request and one focused direct agent.
-That avoids the expensive planner/verifier/synthesis fan-out and is designed to
-finish inside the 300 second function limit.
+- **Start cheap.** Every step begins on the cheapest model that can plausibly do
+  it (the fast path starts on Haiku; planned nodes are routed per step).
+- **Verify, don't hope.** A cheap verifier model scores each deliverable; code
+  must have actually run, files must actually exist. `score >= 5` passes.
+- **Escalate only on proof of failure.** A failed verdict retries **one
+  capability tier up** — never re-rolling the same model, never escalating to
+  something cheaper. The ladder tops out at the frontier, so the quality ceiling
+  equals a frontier-only run.
+- **Learn.** Every verdict (model, tools, score, pass, escalation lineage) is
+  recorded. Once a model has 3+ samples on this installation, its measured pass
+  rate is fed back into the planner prompt — routing gets smarter with use.
+- **Prove the savings.** Each run's real cost is compared to what a
+  frontier-only run of the same tokens would have cost; the delta accrues into a
+  lifetime "saved vs frontier-only" badge.
 
-With the Turso cloud database connected (see env vars above), hosted mode stops
-being amnesiac: conversations and settings persist across cold starts and can
-be continued, uploads survive (≤4 MB), the hosted agent gets the full memory
-tool set plus post-run extraction (on an 8 s leash so it never threatens the
-time limit), and every run lands in the cost ledger. Without the database,
-hosted memory stays read-only-outline and nothing persists — by design, not by
-accident.
+---
 
 ## Runtime Modes
 
 | Mode | Trigger | Behavior |
 |---|---|---|
-| Local live | `node server.js` | Full planner -> review -> parallel agents -> verification -> adaptation -> synthesis pipeline. |
-| Local mock | `MOCK=1 node server.js` | Simulated orchestration with streaming DAG, retry, verification, and answer output. No API key required. |
-| Vercel live | Deployed under Vercel | One direct hosted agent, no plan review, no verifier, no synthesis pass, no retries, capped tool/output budgets. |
-| Vercel mock | Hosted Settings -> Mock mode | Simulated hosted stream for checking the UI without OpenRouter spend. |
+| **Local live** | `node server.js` | Full pipeline: fast-path check → planner → optional review → parallel agents → verification → escalation/adaptation → synthesis. Durable state. |
+| **Local mock** | `MOCK=1 node server.js` | Simulated orchestration with the full streaming DAG, retries, verification, and answer output. No API key needed. |
+| **Hosted live** | Deployed under Vercel | One streamed request, one focused direct agent (still verified, still escalating), sized to finish inside the 300 s function limit. With a cloud DB connected it gains full memory + persistence. |
+| **Hosted mock** | Hosted Settings → Mock mode | Simulated hosted stream for checking the UI without spend. |
+
+Hosted mode is deliberately different because Vercel functions have a hard
+runtime limit and cannot share in-memory run state across requests. It avoids
+the expensive planner/verifier/synthesis fan-out. **With the Turso cloud
+database connected**, hosted mode stops being amnesiac: conversations and
+settings persist and continue across cold starts, uploads survive (≤4 MB), the
+hosted agent gets the full memory tool set plus post-run extraction (on an 8 s
+leash so it never threatens the time limit), and every run lands in the cost
+ledger. Without the database, hosted memory stays outline-only and nothing
+persists — by design.
+
+---
 
 ## Project Structure
 
 ```text
 .
-├── README.md                 Project guide and architecture notes
-├── .gitignore                Ignores runtime data, logs, node_modules, macOS files
-├── package.json              Node package metadata and scripts
-├── vercel.json               Vercel function duration config
-├── Dockerfile                Full-pipeline container image (recommended hosting)
-├── .dockerignore             Keeps data/, results, and git out of the image
-├── fly.toml                  Fly.io app config (volume, SSE-friendly service)
+├── README.md                 This document
+├── package.json              Metadata + scripts (no dependencies)
+├── vercel.json               Function duration + /api rewrite (see Hosting)
+├── Dockerfile / fly.toml     Full-pipeline container hosting (recommended)
 ├── server.js                 HTTP server, API routes, SSE, static files, access gate
 ├── api/
-│   └── [...path].js          Vercel catch-all wrapper that exports server.js
+│   └── index.js              Vercel function: re-exports the server handler
 ├── src/
-│   ├── orchestrator.js       Core run lifecycle and event emission
-│   ├── prompts.js            Planner, agent, verifier, replan, synthesis prompts
-│   ├── tools.js              Web/code/workspace tools used by agents
-│   ├── openrouter.js         Streaming OpenRouter client and retry handling
-│   ├── models.js             Curated model fleet and live OpenRouter pricing
-│   ├── store.js              Flat-file settings, conversations, uploads
-│   ├── mock.js               Simulated run engine for demos/tests
-│   ├── paths.js              Project/data path resolution
-│   └── util.js               IDs, truncation, JSON extraction, sleep
+│   ├── orchestrator.js       Run lifecycle: plan, execute, verify, escalate, synthesize
+│   ├── prompts.js            Planner, agent, verifier, replan, synthesis, memory prompts
+│   ├── models.js             Model fleet, live pricing, routing + escalation ladder
+│   ├── tools.js              Web / code / workspace tools
+│   ├── openrouter.js         Streaming OpenRouter client, retries, free-variant fallback
+│   ├── store.js              Persistence facade: flat files + cloud DB, memory, stats, ledger
+│   ├── db.js                 Zero-dependency Turso/libSQL HTTP client + env detection
+│   ├── memory.js             Hierarchical memory register: outline, tools, search
+│   ├── mock.js               Simulated run engine
+│   ├── paths.js              Project/data path resolution (local vs Vercel /tmp)
+│   └── util.js               IDs, truncation, JSON extraction, path normalization
 ├── public/
-│   ├── index.html            App shell and CDN links for KaTeX/Mermaid
-│   ├── app.js                Vanilla JS state, rendering, SSE, settings, uploads
-│   └── styles.css            Complete UI styling and responsive layout
+│   ├── index.html            App shell, KaTeX/Mermaid CDN links
+│   ├── app.js                State, rendering, SSE, settings, memory tree, diagnostics
+│   └── styles.css            Full UI styling, light/dark, responsive
 ├── bench/
-│   ├── tasks.jsonl           Benchmark task corpus (27 tasks, 5 categories)
-│   ├── run.js                Benchmark runner: maestro vs single-model baselines
+│   ├── tasks.jsonl           27-task corpus across 5 categories
+│   ├── run.js                Runner: maestro vs single-model baselines
 │   └── results/              Timestamped results.jsonl + report.md (git-ignored)
-├── .claude/
-│   └── launch.json           Local launch config for port 4646
-└── data/                     Runtime state, git-ignored
-    ├── settings.json         Local settings and keys
-    ├── conversations/        Saved chats and run snapshots
-    ├── files/                Uploaded file blobs and metadata
-    ├── sandbox/venv/         Python virtualenv created at startup
-    └── workspaces/<runId>/   Per-run staged inputs and artifacts
+├── .claude/launch.json       Local dev launch configs
+└── data/                     Runtime state, git-ignored (see Persistence)
 ```
 
-`data/` is not committed. On Vercel, the same logical data root is under
-`/tmp/maestro-data`, so it is ephemeral and may disappear across cold starts or
-redeploys.
+`data/` is never committed. On Vercel the logical data root is `/tmp/maestro-data`
+— ephemeral, which is exactly why the cloud database matters for hosting.
+
+---
 
 ## Server Architecture
 
-`server.js` exports a single `handler(req, res)` used both by the local HTTP
-server and the Vercel catch-all route.
+`server.js` exports a single `handler(req, res)` used by both the local HTTP
+server and the Vercel function.
 
-Startup work:
+**Startup** (`ready` promise, awaited before every request):
+- `store.init()` — flat-file storage, and if a cloud DB is configured, connect,
+  self-migrate the schema, and migrate existing local history up on first connect.
+- `ensureLivePricing()` — background refresh of OpenRouter's model/pricing catalog.
+- `initSandbox()` — detect runtimes, build the Python venv in `data/sandbox/venv`.
 
-- Initializes flat-file storage with `store.init()`.
-- Starts live OpenRouter model/pricing refresh in the background.
-- Detects sandbox runtimes and prepares the Python venv in `data/sandbox/venv`.
-- Serves `public/` as static files outside `/api/*`.
+**Request routing:**
+- `/api/*` → `handleApi()`. **Every** API route first calls `store.ensureCloud()`,
+  which is a no-op when already connected and otherwise heals a flaked
+  serverless cold-start connection. (This is why a chat that lives in the cloud
+  no longer 404s on a warm instance that missed the first connect.)
+- Everything else → `serveStatic()` from `public/`.
 
-Important constants:
+**Constants:** local port `4646`; JSON body limit `25 MB`; hosted graceful stop
+at `270 s` (before Vercel's `300 s`); in-memory run map trimmed after 20 finished
+runs.
 
-- Local port: `4646` unless `PORT` is set.
-- JSON body limit: `25MB`.
-- Hosted graceful stop: `270s`, before Vercel's `300s` function timeout.
-- Active in-memory runs are trimmed after 20 finished runs.
+---
 
 ## API Surface
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/api/bootstrap` | Returns masked settings, model catalog, conversations, mock-forced flag. |
-| `POST` | `/api/settings` | Saves settings. Empty secret fields mean "keep existing value". |
-| `POST` | `/api/upload` | Saves an uploaded file blob and metadata. |
-| `GET` | `/api/conversation/:id` | Loads a saved conversation and reports an active run if present. |
-| `DELETE` | `/api/conversation/:id` | Deletes a saved conversation. |
-| `POST` | `/api/run` | Starts a local background run, then clients subscribe via EventSource. |
-| `POST` | `/api/run-stream` | Starts and streams a run over the same response. Used by hosted mode. |
-| `POST` | `/api/runs/:id/stop` | Aborts an active run. |
-| `POST` | `/api/runs/:id/plan` | Approves/cancels a plan-review gate, optionally with node edits. |
-| `GET` | `/api/events/:runId` | SSE event replay/subscribe endpoint for local runs. |
-| `GET` | `/api/runs/:id/files/*` | Serves workspace artifacts with sandboxing/CSP headers. |
-| `DELETE` | `/api/memories/:id` | Forgets one long-term memory entry; returns the remaining list. |
+| `GET` | `/api/bootstrap` | Masked settings, model catalog, conversations, memory register, mock flag. Refreshes cloud state first. |
+| `POST` | `/api/settings` | Save settings. Empty secret fields mean "keep existing". |
+| `POST` | `/api/memories` | Add one register entry manually (path + text + type). |
+| `DELETE` | `/api/memories/:id` | Forget one entry; returns the remaining register. |
+| `POST` | `/api/upload` | Store an uploaded file blob + metadata. |
+| `GET` | `/api/conversation/:id` | Load a saved conversation; reports an active run if present. |
+| `DELETE` | `/api/conversation/:id` | Delete a conversation. |
+| `POST` | `/api/run` | Start a local background run; client subscribes via EventSource. |
+| `POST` | `/api/run-stream` | Start and stream a run over one response. Used by hosted mode. |
+| `POST` | `/api/runs/:id/stop` | Abort an active run. |
+| `POST` | `/api/runs/:id/plan` | Approve/cancel the plan-review gate, optionally with node edits. |
+| `GET` | `/api/events/:runId` | SSE subscribe/replay for local runs. |
+| `GET` | `/api/runs/:id/files/*` | Serve workspace artifacts under a CSP sandbox. |
 
-Artifact serving:
+**Artifact serving:** text/images/PDF/HTML render inline; SVG under a strict CSP;
+HTML under `sandbox allow-scripts` (opaque origin — agent-built apps/games run
+but cannot touch the Maestro origin, API, or storage); paths cannot escape the
+run workspace.
 
-- Text, images, PDF, and HTML can render inline.
-- SVG uses a restrictive CSP sandbox.
-- HTML artifacts use `sandbox allow-scripts allow-pointer-lock`, so apps/games
-  can run without access to the Maestro origin.
-- Paths are resolved under the run workspace and cannot escape it.
+---
 
 ## Orchestrator Lifecycle
 
-The core lifecycle lives in `src/orchestrator.js`.
+Core lifecycle lives in `src/orchestrator.js`.
 
-1. `createRun()` creates run state, workspace path, event log, totals, and abort
-   controller.
-2. `executeRun()` prepares the workspace, plans or creates a hosted direct plan,
-   executes the graph, collects artifacts, synthesizes an answer, emits `done`,
-   and persists the final snapshot.
-3. `emit()` stores every event in `run.events` and relays compact SSE payloads
-   to subscribers.
-4. `snapshot()` stores the durable run shape inside the conversation.
+1. **`createRun()`** — run state, workspace path, event log, totals (including a
+   frontier `baselineCost` accumulator), abort controller.
+2. **Plan.** `shouldFastPath()` decides between:
+   - **Fast path** — task ≤ 220 chars, single line, no attachments, no
+     multi-part keywords → `createFastPlan()`: one Haiku 4.5 agent (or the
+     fallback model) with the tools the task implies. No planner call, no
+     15–30 s latency. Still verified, still able to escalate.
+   - **Full plan** — `planPhase()` calls the orchestrator (frontier) model with
+     `plannerSystemPrompt()`; `validatePlan()` normalizes nodes, caps at 12,
+     drops dangling deps, rejects cycles.
+3. **Review.** `approvalGate()` optionally pauses for the UI to edit/delete/approve
+   nodes (local only; forced off on hosted).
+4. **Execute.** `executeGraph()` runs dependency-ready nodes in parallel up to
+   `maxParallel`. Each `runNode()` runs the agent loop, then:
+   - **Verify** (`verifyNode()`) unless the planner waived it. `score >= 5` passes.
+   - **Escalate on failure** — the retry moves one tier up via
+     `escalationModel()`: `budget → Haiku 4.5 → Sonnet 4.5 → Opus 4.5`, never
+     cheaper, capped at the frontier. `escalatedFrom` is tracked for the ledger.
+   - **Record the verdict** (model, tools, attempt, score, pass, escalation
+     lineage) into stats — the learning-router dataset.
+5. **Adapt.** `maybeAdapt()` can revise pending nodes after hard failures (up to
+   2 replans).
+6. **Synthesize.** `synthesisPhase()` streams a single node's output directly, or
+   merges all node outputs with the orchestrator model.
+7. **Ledger + memory.** The run's real cost and frontier baseline are written to
+   the cost ledger; `memoryPhase()` runs the post-run extractor (best-effort,
+   never fails a run).
 
-Local full pipeline:
+**Cost cap.** When `maxRunCost > 0` and a run's spend reaches it, the run aborts
+cleanly with partial work saved and a clear message — the trust feature that
+makes handing an agent an API key tolerable.
 
-- `planPhase()` calls the orchestrator model with `plannerSystemPrompt()`.
-- `validatePlan()` normalizes nodes, caps at 12, drops dangling dependencies,
-  and rejects cycles.
-- `approvalGate()` optionally pauses until the UI approves, edits, deletes, or
-  cancels nodes.
-- `executeGraph()` runs dependency-ready nodes in parallel up to `maxParallel`.
-- `runNode()` executes one node, verifies it if needed, and retries with
-  verifier feedback up to `maxRetries`.
-- `maybeAdapt()` can revise pending nodes after hard failures, up to 2 replans.
-- `collectArtifacts()` lists workspace files that are not unchanged staged
-  attachments.
-- `synthesisPhase()` either streams a single-node output directly or calls the
-  orchestrator model to merge all node outputs.
+---
 
-Hosted direct pipeline:
+## The Learning Router
 
-- `createHostedDirectPlan()` builds one node named `Complete request`.
-- It heuristically grants `web` and/or `code` tools based on the task and
-  attachments.
-- It disables plan review, retries, verifier calls, replanning, and synthesis.
-- It uses tighter tool and max-token budgets:
-  - `HOSTED_TOOL_ROUNDS = 4`
-  - `none: 4500`, `low: 5500`, `medium/high: 6500` output-token caps
+Every verification produces a verdict, and every verdict is routing signal:
+*which model delivered on which kind of work, on this installation.* Verdicts
+accumulate in `data/stats.json` (and the cloud `verdicts` table). Once a model
+has **3+ samples**, its measured pass rate is injected into the planner prompt as
+a "measured reliability" section — so routing is grounded in what actually
+happened here, not vibes. This dataset compounds with usage and cannot be cloned
+by shipping the code; it is the moat.
 
-## Event Model
+## The Savings Ledger
 
-Runs stream typed events to the frontend. Key event types:
+For every model call, Maestro also computes what the same tokens would have cost
+on the frontier orchestrator model (`baselineCost`). The difference is what
+routing saved. It accrues per-run into `data/runs.jsonl` and into a lifetime
+sidebar badge ("✦ $X saved vs frontier-only"). Per-conversation savings persist
+so the badge survives restarts — the retention hook and pricing anchor.
 
-| Event | Meaning |
-|---|---|
-| `meta` | Streamed-run metadata: run id, conversation id, title. |
-| `phase` | Run phase: planning, awaiting approval, running, synthesis, done, error, stopped. |
-| `plan` | Initial or edited DAG plan. |
-| `plan_delta` | Live planner/replanner text stream, split into thinking/json buffers. |
-| `plan_updated` | Adaptive replan changed the DAG. |
-| `adapt_decision` | Replanner chose to proceed without changes. |
-| `node_status` | Node status/attempt/error changes. |
-| `node_delta` | Live node output text. |
-| `node_result` | Final compact node stats. Full output stays in server snapshot. |
-| `verify_result` | Verifier score/pass/feedback. `score >= 5` is a pass. |
-| `tool_call` / `tool_result` | Tool activity for the node Activity tab. |
-| `artifacts` | Workspace artifact list. |
-| `usage` | Cumulative calls, input tokens, output tokens, cost. |
-| `answer_delta` / `answer_done` | Final answer stream. |
-| `error` | Run or node error. Stopped hosted runs carry a `stopMessage`. |
-| `done` | Final compact run snapshot marker. |
+---
 
-For hosted streams, `compactEventForStream()` removes large node outputs from
-`node_result` and sends compact `done` data. The browser merges compact data
-with its live state.
+## Memory: the hierarchical register
 
-## Agent Tools
+Long-term, cross-conversation memory is a **register**: every durable fact lives
+at a path like `preferences/format`, `privatleben/familie/kind`, or
+`work/projects/maestro` (`src/memory.js`). The register differentiates as it
+grows — a branch with 7+ direct entries is flagged ⚠ crowded, and the post-run
+extractor migrates its entries into more specific subpaths via `move` ops.
 
-Tools live in `src/tools.js` and are exposed by tool groups in a node plan:
+**Token economics (the whole point):**
 
-| Group | Tools |
-|---|---|
-| `web` | `web_search`, `fetch_url` |
-| `code` | `run_code`, `pip_install`, `write_file`, `read_file`, `list_files` |
+- **Outline in the prompt, details via tools.** Every prompt (planner, synthesis,
+  each agent) gets only a compact **outline** of the register, hard-capped at
+  ~1600 chars. While the register is small the outline *is* the full content (so
+  no tool round is ever wasted); past the budget it compresses to truncated
+  facts and branch summaries, prioritizing recently used branches.
+- **Every agent carries four tools** (granted automatically, never planned):
+  `memory_search` / `memory_read` pull details on demand (reads bump `usedAt`,
+  which drives outline priority), `memory_write` stores a durable fact the moment
+  it appears mid-run, `memory_forget` deletes by id. Search is scored substring
+  matching over path + text — no embeddings, which at register scale is both
+  sufficient and debuggable.
+- **Post-run extractor.** A cheap model reviews the exchange against the register
+  (with ids), files what agents missed, prunes contradicted entries, and splits
+  crowded branches. "No changes" is the expected outcome for most tasks; secrets
+  are banned from storage by prompt.
 
-Web behavior:
+**Consistency across serverless instances.** Because the outline is read
+synchronously from an in-memory cache, `refreshMemories()` re-reads the register
+from the cloud on `/api/bootstrap` and at run start, so an agent (or the Settings
+tree) sees facts written by other instances — with a guard that keeps the
+existing cache if a cloud read transiently fails.
 
-- Brave Search is preferred when `braveApiKey` is configured.
-- DuckDuckGo Lite/HTML are fallbacks.
-- `fetch_url` accepts only public `http(s)` URLs and blocks local/private
-  addresses.
-- Fetched text is stripped and capped.
+Every entry is visible and one-click-deletable in Settings, rendered as a
+collapsible path tree with per-branch counts and crowded flags. A global toggle
+turns the whole system off.
 
-Code behavior:
-
-- Each run has an isolated workspace under `data/workspaces/<runId>`.
-- `run_code` executes snippets in `.tmp/` inside that workspace.
-- Python uses a virtualenv if available, with `sympy` and `openpyxl` installed
-  by setup and system packages available through `--system-site-packages`.
-- The environment strips variables that look like keys, tokens, secrets,
-  passwords, or credentials.
-- `MPLBACKEND=Agg` is set so Matplotlib saves images headlessly.
-- `run_code` timeout is capped at 120 seconds.
-- `pip_install` is capped at 240 seconds and validates package names.
-- `write_file` refuses content over 2MB and cannot escape the workspace.
-- `read_file` and tool results are capped before returning to models/UI.
-
-## Model Fleet
-
-The fleet is defined in `src/models.js`.
-
-Current catalog size: 17 models across frontier, mid, and budget tiers. The
-catalog includes Claude, OpenAI, Gemini, GLM, Nemotron, DeepSeek, Qwen, Kimi,
-Grok, and Mistral entries.
-
-At startup `ensureLivePricing()` fetches OpenRouter's public model catalog and:
-
-- updates input/output prices,
-- updates context lengths,
-- marks missing slugs unavailable,
-- detects `:free` variants,
-- records whether free variants support tools.
-
-`routeModel()` uses `:free` variants first when `preferFree` is enabled and the
-variant can satisfy tool requirements. If the free route fails or rate limits,
-`openrouter.js` retries the paid slug.
-
-## OpenRouter Client
-
-`src/openrouter.js` is a minimal streaming client for
-`https://openrouter.ai/api/v1/chat/completions`.
-
-It supports:
-
-- SSE parsing without dependencies,
-- content deltas,
-- reasoning deltas,
-- tool-call deltas,
-- OpenRouter usage accounting,
-- estimated fallback cost when usage cost is absent,
-- retries for retryable failures,
-- free-variant fallback routing,
-- restart callbacks so already-streamed partial UI can be reset safely.
-
-## Prompts
-
-All system/user prompt builders live in `src/prompts.js`.
-
-| Function | Role |
-|---|---|
-| `plannerSystemPrompt()` | Teaches the orchestrator model how to build a cost-aware DAG. |
-| `plannerUserPrompt()` | Adds date, conversation history, attachments, and task. |
-| `agentSystemPrompt()` | Gives each node its standalone brief, deliverables, tool rules, and output rules. |
-| `verifierSystemPrompt()` | Defines verification standards and the `score >= 5` pass rule. |
-| `verifierUserPrompt()` | Supplies objective, deliverables, rubric, and output to check. |
-| `replanSystemPrompt()` / `replanUserPrompt()` | Lets the orchestrator recover from failed nodes. |
-| `synthesisSystemPrompt()` / `synthesisUserPrompt()` | Produces the final user-facing answer. |
-
-Editing these prompt builders is the main way to change Maestro's behavior.
-
-## Frontend
-
-The frontend is vanilla HTML/CSS/JS in `public/`.
-
-`index.html`:
-
-- Defines the sidebar, chat area, composer, modal root, and upload input.
-- Loads `styles.css` and `app.js`.
-- Loads KaTeX and Mermaid from CDN; both fail gracefully offline.
-
-`app.js` responsibilities:
-
-- Holds global UI state: settings, models, conversations, active chat, live run,
-  EventSource, streamed fetch abort controller, and timer.
-- Renders markdown, code blocks, tables, math placeholders, Mermaid blocks,
-  artifact images, and sandboxed HTML previews.
-- Renders the DAG, node cards, status icons, plan editor, activity logs,
-  verifier results, artifacts, and final answer.
-- Handles settings, hosted localStorage settings, theme, uploads, chat list,
-  conversation restore, send/stop controls, and stream recovery.
-- Uses `/api/run` + `/api/events/:id` locally and `/api/run-stream` in hosted
-  mode.
-- Recovers hosted streams by checking the saved conversation after a disconnect;
-  if no final snapshot exists, it preserves the partial run as stopped with a
-  warning instead of showing the old hard failure.
-
-`styles.css`:
-
-- Implements light/dark themes with CSS variables.
-- Styles the sidebar, composer, chat bubbles, markdown, DAG, node detail,
-  plan-review editor, tool timeline, artifacts, modal, KaTeX/Mermaid, and
-  responsive mobile layout.
+---
 
 ## Persistence
 
 `src/store.js` is a facade over two backends:
 
-- **Local flat files** under `DATA_ROOT` — always on, zero-config.
-- **Cloud libSQL/Turso database** (`src/db.js`, plain-fetch HTTP client, no
+- **Local flat files** under the data root — always on, zero-config.
+- **Cloud libSQL/Turso database** (`src/db.js`, plain-`fetch` HTTP client, no
   dependencies) — optional. Configure via Settings → Cloud database or the
-  `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` env vars. When connected,
-  conversations, uploaded files (≤4 MB), settings, memory, verifier verdicts,
-  and a per-run cost ledger (`runs` table) are written through to the cloud
-  and read from it — chats continue across restarts, machines, and hosted
-  deployments. On first connect, existing local history is migrated up
-  automatically. If the cloud is unreachable, Maestro degrades to local files
-  instead of breaking. The schema self-migrates (`CREATE TABLE IF NOT EXISTS`)
-  on every connect.
+  `TURSO_*` env vars (prefixed names auto-detected). When connected,
+  conversations, files (≤4 MB), settings, memory, verdicts, and the run cost
+  ledger are written through and read back — chats continue across restarts,
+  machines, and hosted deployments. The schema self-migrates
+  (`CREATE TABLE IF NOT EXISTS`) on every connect; existing local history is
+  migrated up on first connect; an unreachable cloud degrades to local files
+  instead of breaking.
 
-| Path | Contents |
+| Path / table | Contents |
 |---|---|
-| `data/settings.json` | API keys, model choices, preferences, mock flag, cloud DB credentials (the one thing that must stay local to bootstrap). |
-| `data/conversations/*.json` | Chat messages, assistant run snapshots, cost. |
-| `data/files/*.bin` | Uploaded file bytes. |
-| `data/files/*.json` | Upload metadata and text previews. |
-| `data/workspaces/<runId>/` | Staged attachments and generated artifacts. |
+| `data/settings.json` | Keys, model choices, preferences, cloud DB credentials (kept local to bootstrap the connection). |
+| `data/conversations/*.json` · `conversations` | Chat messages, run snapshots, cost, savings. |
+| `data/files/*` · `files` | Uploaded bytes + metadata/previews. |
+| `data/memory.json` · `memory` | The hierarchical register (path, text, type, timestamps). |
+| `data/stats.json` · `verdicts` | Verifier verdicts per model — the learning-router dataset. |
+| `data/runs.jsonl` · `runs` | Append-only cost ledger: cost, frontier baseline, savings, tokens per run. |
+| `data/workspaces/<runId>/` | Per-run staged inputs and generated artifacts. |
 | `data/sandbox/venv/` | Python virtualenv for code execution. |
-| `data/stats.json` | Verifier verdicts per model (pass/score/escalation) — fed back into the planner prompt as measured reliability once a model has 3+ samples. |
-| `data/memory.json` | The hierarchical memory register (see below). |
-| `data/runs.jsonl` | Append-only cost ledger: one row per run (cost, frontier baseline, savings, tokens). |
+| — · `kv` | Cloud key/value for settings on hosted (tmpfs) deployments. |
 
-## Memory: the hierarchical register
+---
 
-Long-term memory is a **register**: every durable fact lives at a path like
-`preferences/format`, `privatleben/familie/kind`, or `work/projects/maestro`
-(`src/memory.js`). The register differentiates as it grows — branches with too
-many direct entries are flagged ⚠ crowded, and the post-run extractor moves
-their entries into more specific subpaths.
+## Agent Tools
 
-Token economics by design:
+Tools live in `src/tools.js`, exposed by group in a node plan:
 
-- Every prompt (planner, synthesis, every agent) gets only a compact **outline**
-  of the register. While the register is small the outline *is* the full
-  content (no tool round wasted); past ~1600 chars it compresses to truncated
-  facts and branch summaries, prioritizing recently used branches.
-- **Every agent** carries four memory tools automatically (never planned):
-  `memory_search` / `memory_read` pull details on demand (reads bump `usedAt`,
-  which drives outline priority), `memory_write` stores a durable fact the
-  moment it appears mid-run, `memory_forget` deletes by id.
-- After each run, a cheap extractor model reviews the exchange against the
-  register with ids: it files what agents missed, prunes contradicted entries,
-  and splits crowded branches (`add` / `move` / `remove` ops).
+| Group | Tools |
+|---|---|
+| `web` | `web_search`, `fetch_url` |
+| `code` | `run_code`, `pip_install`, `write_file`, `read_file`, `list_files` |
+| `memory` | `memory_search`, `memory_read`, `memory_write`, `memory_forget` (auto-granted, not planned) |
 
-Every entry is visible and deletable in Settings; secrets are banned from
-storage by prompt; a global toggle turns the whole system off.
+- **Web:** Brave Search when `braveApiKey` is set, DuckDuckGo fallback; `fetch_url`
+  allows only public `http(s)` and blocks local/private addresses; fetched text
+  is stripped and capped.
+- **Code:** isolated workspace per run under `data/workspaces/<runId>`; Python
+  uses a venv with numpy/pandas/matplotlib/sympy/openpyxl available; the child
+  env strips key/token/secret/password-looking variables; `MPLBACKEND=Agg` for
+  headless charts; `run_code` capped at 120 s, `pip_install` at 240 s with name
+  validation; `write_file` refuses >2 MB and cannot escape the workspace.
 
-File classification:
+---
 
-- Images: MIME starts with `image/`.
-- PDFs: `application/pdf` or `.pdf`.
-- Text: text MIME, known text MIME, or recognized source/data extension.
-- Everything else: binary.
+## Model Fleet
+
+Defined in `src/models.js` — 17 models across **frontier / mid / budget** tiers
+(Claude, OpenAI, Gemini, GLM, Nemotron, DeepSeek, Qwen, Kimi, Grok, Mistral),
+each annotated with price, context, vision, reasoning, and honest
+strengths/weaknesses the planner reads.
+
+At startup `ensureLivePricing()` fetches OpenRouter's catalog and updates prices,
+context lengths, availability, and `:free` variant support. `routeModel()` uses a
+`:free` variant first when `preferFree` is on and it can satisfy tool
+requirements; `openrouter.js` retries the paid slug if the free route fails or
+rate-limits. `escalationModel()` implements the tier ladder used on verifier
+failure.
+
+---
+
+## Frontend
+
+Vanilla HTML/CSS/JS in `public/`, no build step.
+
+- **`index.html`** — sidebar, chat, composer, modal root, upload input; KaTeX +
+  Mermaid from CDN (fail gracefully offline).
+- **`app.js`** — global UI state; markdown/code/table/math/Mermaid/artifact
+  rendering; DAG, node cards, plan editor, activity logs, verifier results,
+  artifacts, final answer; settings, theme, uploads, chat list, conversation
+  restore, send/stop, stream recovery. Uses `/api/run` + `/api/events/:id`
+  locally and `/api/run-stream` hosted. The Settings memory tree renders the
+  register as collapsible branches with hover-to-forget.
+- **`styles.css`** — light/dark via CSS variables; responsive mobile layout.
+
+**Client diagnostics.** The `api()` helper logs every call (method, path, status,
+duration, and whether a 404 came from the Maestro handler or the platform) into a
+rolling buffer. Run **`maestroDebug()`** in the browser console for a
+copy-pasteable report — client state, live cloud status, recent API calls, and a
+last-conversation fetch check — for fast bug reports.
+
+---
+
+## Prompts
+
+All prompt builders live in `src/prompts.js`. Editing them is the main way to
+change Maestro's behavior.
+
+| Function | Role |
+|---|---|
+| `plannerSystemPrompt()` / `plannerUserPrompt()` | Cost-aware DAG planning; injects date, memory outline, conversation, attachments, and measured model reliability. |
+| `agentSystemPrompt()` | Each node's standalone brief, deliverables, tool rules, memory outline + rules, exact-format rule. |
+| `verifierSystemPrompt()` / `verifierUserPrompt()` | Verification standards and the `score >= 5` pass rule. |
+| `replanSystemPrompt()` / `replanUserPrompt()` | Recovery after failed nodes. |
+| `synthesisSystemPrompt()` / `synthesisUserPrompt()` | The final user-facing answer. |
+| `memorySystemPrompt()` / `memoryUserPrompt()` | The post-run register extractor (add/move/remove ops). |
+
+---
 
 ## Settings
 
-Defaults live in `src/store.js`.
+Defaults in `src/store.js`.
 
 | Setting | Default | Notes |
 |---|---|---|
-| `apiKey` | empty | Stored locally unless `OPENROUTER_API_KEY` overrides it. |
-| `braveApiKey` | empty | Optional; improves web search quality. |
-| `userName` | `Mateo` | Used for greeting/avatar. |
-| `orchestratorModel` | `anthropic/claude-opus-4.5` | Planner, replanner, synthesis, and hosted direct agent model. |
-| `verifierModel` | `openai/gpt-5-mini` | Verifier in local full mode. |
-| `fallbackModel` | `openai/gpt-5-mini` | Used if a planned model is unavailable. |
-| `maxParallel` | `4` | Local graph concurrency, clamped to `1..8`. |
-| `maxRetries` | `1` | Node retries after verifier failure, clamped to `0..3`. |
-| `approvePlans` | `true` | Local plan-review gate. Forced off on Vercel. |
+| `apiKey` | empty | Local unless `OPENROUTER_API_KEY` overrides. |
+| `braveApiKey` | empty | Optional; sharper web search. |
+| `userName` | `Mateo` | Greeting/avatar. |
+| `orchestratorModel` | `anthropic/claude-opus-4.5` | Planner, replanner, synthesis, hosted agent — **and the frontier baseline** for savings. |
+| `verifierModel` | `openai/gpt-5-mini` | Verifier and post-run memory extractor. |
+| `fallbackModel` | `openai/gpt-5-mini` | Used when a planned/fast-path model is unavailable. |
+| `maxParallel` | `4` | Graph concurrency, clamped `1..8`. |
+| `maxRetries` | `1` | Retries after verifier failure (each escalates a tier), clamped `0..3`. |
+| `maxRunCost` | `0` | Hard per-run USD ceiling; run aborts cleanly when reached. `0` disables. |
+| `approvePlans` | `true` | Local plan-review gate. Forced off on hosted. |
 | `preferFree` | `true` | Try OpenRouter `:free` variants first. |
+| `memoryEnabled` | `true` | The hierarchical register (outline + tools + extractor). |
 | `mock` | `false` | Simulate runs without model calls. |
-| `maxRunCost` | `0` | Hard per-run spend ceiling in USD; the run aborts cleanly (partial work saved) when reached. `0` disables the cap. |
-| `memoryEnabled` | `true` | The hierarchical memory register: outline injected into every prompt, memory tools granted to every agent, post-run extraction/reorganization. Viewable/deletable in Settings. |
-| `tursoUrl` | empty | Cloud database URL (`libsql://…`). Empty = local files only. |
-| `tursoToken` | empty | Cloud database auth token. Env vars `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` override both. |
+| `tursoUrl` / `tursoToken` | empty | Cloud DB credentials; `TURSO_*` env vars override both. |
 
-Hosted UI settings are persisted in browser localStorage under
-`maestro-hosted-settings` and sent with each `/api/run-stream` call, because
-Vercel's filesystem is ephemeral.
+Hosted UI settings persist in browser `localStorage` (`maestro-hosted-settings`)
+and are sent with each `/api/run-stream` call, since Vercel's filesystem is
+ephemeral.
 
-## Attachments and Artifacts
+---
 
-Upload flow:
-
-1. Browser converts selected files to base64 and posts `/api/upload`.
-2. Server stores bytes and metadata under `data/files/`.
-3. Planner receives attachment metadata and short previews for text files.
-4. Selected node attachments are inlined when possible or staged into the
-   workspace for code tools.
-
-Artifact flow:
-
-1. Agents write files with `write_file`, Matplotlib `savefig`, or normal code.
-2. `autoSaveCode()` saves substantial fenced code blocks that were only written
-   in an answer.
-3. `collectArtifacts()` lists workspace files that are not unchanged staged
-   attachments.
-4. The UI renders download chips, image galleries, and playable HTML previews.
-
-## Hosted Deployment
+## Hosting
 
 ### Docker / Fly.io / Railway — recommended (full pipeline)
 
-A long-running container runs the exact same pipeline as local mode: planner,
-parallel agents, verifier, adaptive replanning, synthesis, durable state.
-This is the deployment to show people.
-
-Docker:
+A long-running container runs the exact same pipeline as local mode: fast path,
+planner, parallel agents, verification, escalation, replanning, synthesis,
+durable state. **This is the deployment to show people.**
 
 ```bash
 docker build -t maestro .
@@ -484,49 +447,46 @@ docker run -p 4646:4646 -v maestro_data:/data \
   maestro
 ```
 
-Fly.io (config in `fly.toml`):
+Fly.io (`fly.toml` included): `fly launch --no-deploy`, create a `maestro_data`
+volume, `fly secrets set OPENROUTER_API_KEY=… MAESTRO_ACCESS_CODE=…`, `fly deploy`.
+Railway picks up the `Dockerfile` automatically — attach a volume at `/data` and
+set the same two variables.
 
-```bash
-fly launch --no-deploy
-fly volumes create maestro_data --size 1
-fly secrets set OPENROUTER_API_KEY=sk-or-... MAESTRO_ACCESS_CODE=choose-a-code
-fly deploy
+**Always set `MAESTRO_ACCESS_CODE` on a public deployment** — the server spends
+your key and executes model-written code. The deployment is single-tenant (all
+visitors share one settings file and conversation list).
+
+### Vercel — hosted single-agent mode
+
+`vercel.json` maps **all** `/api/*` requests to one function via a rewrite:
+
+```json
+{
+  "functions": { "api/index.js": { "maxDuration": 300 } },
+  "rewrites": [{ "source": "/api/(.*)", "destination": "/api" }]
+}
 ```
 
-Railway: create a project from the repo — it picks up the `Dockerfile`
-automatically. Attach a volume at `/data` and set the same two variables.
+The rewrite is required: Vercel's file-based catch-all only reliably matched a
+single path segment, so nested routes (`/api/conversation/:id`,
+`/api/runs/:id/*`, `/api/events/:id`) fell through to the platform's own 404 and
+never reached the handler. Routing everything to `api/index.js` — which receives
+the original `req.url` — fixes every depth; static assets stay on the CDN.
 
-Notes:
+To enable persistence, connect a Turso database (the Vercel integration injects
+`TURSO_*` env vars, prefixed names included) and **redeploy**. The Settings panel
+reports `cloudConnected` and the resolved `cloudEnvVar`. Constraints of hosted
+mode: no plan review, one direct (still-verified) agent, smaller tool/output
+budgets, and a 270 s graceful stop before the 300 s hard limit. Use the container
+or local mode for real multi-agent jobs.
 
-- **Always set `MAESTRO_ACCESS_CODE` on a public deployment.** The server
-  spends your OpenRouter key and executes model-written code; the access gate
-  is what stands between that and the open internet.
-- The deployment is single-tenant: all visitors share one settings file and
-  one conversation list.
-- The image ships python3 with numpy/pandas/matplotlib (apt) so `run_code`
-  charts work out of the box; the venv is created on the volume at first boot.
-
-### Vercel — legacy (degraded single-agent mode)
-
-The Vercel path still works (`api/[...path].js` + `vercel.json`,
-`maxDuration` 300) but is constrained by the platform:
-
-- Conversation and file state live under `/tmp/maestro-data` and are not
-  durable.
-- Plan review is disabled; runs use the direct single-agent path.
-- Tool and output budgets are smaller.
-- No verifier, no adaptive replanning, no synthesis call, and no retries.
-- A timer aborts at 270 seconds with a clear stop message before Vercel's 300
-  second hard timeout.
-
-Use the container deployment (or local mode) for real multi-agent jobs.
+---
 
 ## Benchmarks
 
-`bench/tasks.jsonl` is the task corpus (27 tasks across `code`, `math`,
-`research`, `realworld`, `agentic`); `bench/run.js` is the runner. It exists
-to turn Maestro's core claim — frontier-quality output at a fraction of
-frontier cost — into a measured number.
+`bench/tasks.jsonl` is a 27-task corpus across `code`, `math`, `research`,
+`realworld`, `agentic`; `bench/run.js` turns the core claim — frontier-quality at
+a fraction of frontier cost — into a measured number.
 
 ```bash
 npm run bench                       # maestro vs opus-only, all tasks
@@ -537,61 +497,57 @@ node bench/run.js --mock            # pipeline smoke test, zero spend
 node bench/run.js --list            # show the corpus
 ```
 
-Each task runs through one or more modes — `maestro` (full pipeline) and
-`single:<model>` baselines (one agent node on that model with the same web/code
-tools, no verifier, no retries) — and is scored by its `scoring` field:
+Each task runs through `maestro` (full pipeline) and `single:<model>` baselines
+(one agent node, same tools, no verifier/retries) and is scored by its `scoring`
+field:
 
 | Scoring | How it's graded |
 |---|---|
-| `tests` | The task's Python asserts execute against the run workspace. |
-| `exact` | The expected string must appear in the final answer. |
-| `judge` | A judge model (default `gpt-5.1`, `--judge` to change) scores 0–10. |
-| `judge+checks` | Judge score gated by programmatic checks: required artifacts exist, test commands pass, citation domains present. Failed checks cap the score at 4. |
-| `exact-runtime` | Live-web research tasks — judged, since there is no offline ground truth; flagged in the report. |
+| `tests` | The task's Python asserts run against the workspace. |
+| `exact` | The expected string must appear in the answer. |
+| `judge` | A judge model (default `gpt-5.1`) scores 0–10. |
+| `judge+checks` | Judge score gated by programmatic checks (artifacts exist, tests pass, citations present); failed checks cap the score at 4. |
+| `exact-runtime` | Live-web tasks — judged, since there is no offline ground truth. |
 
-Results land in `bench/results/<timestamp>/` as `results.jsonl` plus a
-`report.md` with a mode-comparison summary ("Maestro: X% pass at $A vs
-opus-only: Y% pass at $B"). `preferFree` is off during benchmarks so costs
-reflect real paid prices; runs are billed to your OpenRouter key.
+Results land in `bench/results/<timestamp>/` as `results.jsonl` + `report.md`
+(mode comparison: "Maestro X% pass at $A vs opus-only Y% at $B"). `preferFree` is
+off during benchmarks so costs reflect real paid prices; runs bill your key.
+
+> The most decisive experiment is the agentic/realworld tier against Sonnet and
+> Opus — that measures the actual product (real DAG fan-out, escalation, the
+> savings delta), not just routing on easy tasks where any model passes.
+
+---
 
 ## Security and Cost Notes
 
-- `data/` is git-ignored because it may contain API keys, uploads,
-  conversations, and generated files.
-- Model providers receive task content routed to them through OpenRouter.
-- `run_code` executes model-written code on the host machine, scoped to the
-  workspace and with secrets stripped from the child environment, but it is not
-  a container or VM.
-- `fetch_url` blocks localhost and private network addresses.
-- API keys are masked when sent to the browser.
-- OpenRouter-reported costs are accumulated per call, node, run, and
-  conversation.
-- The Stop button aborts the run's `AbortController`.
+- `data/` is git-ignored (it may hold API keys, uploads, conversations, artifacts).
+- Task content is routed to model providers through OpenRouter.
+- `run_code` executes model-written code on the host, scoped to the workspace
+  with secrets stripped from the child env — but it is **not** a container or VM.
+- `fetch_url` blocks localhost and private-network addresses.
+- API keys are masked when sent to the browser; secrets are banned from memory.
+- Costs are accumulated per call, node, run, and conversation, and compared to
+  the frontier baseline for the savings ledger.
+- The Stop button aborts the run's `AbortController`; `maxRunCost` is a hard
+  ceiling.
+
+---
 
 ## Development Notes
 
-- No build step and no runtime dependencies are required.
-- Prefer changing behavior in `src/prompts.js`, model routing in
-  `src/models.js`, and run lifecycle in `src/orchestrator.js`.
-- Run syntax checks with:
+- No build step, no runtime dependencies.
+- Change behavior in `src/prompts.js`, routing/escalation in `src/models.js`, and
+  the run lifecycle in `src/orchestrator.js`.
+- Syntax-check the tree:
 
-```bash
-node --check server.js
-node --check src/orchestrator.js
-node --check src/tools.js
-node --check src/openrouter.js
-node --check src/models.js
-node --check src/prompts.js
-node --check src/store.js
-node --check src/mock.js
-node --check public/app.js
-```
+  ```bash
+  for f in server.js api/index.js src/*.js public/app.js; do node --check "$f"; done
+  ```
 
-- Run a no-spend UI smoke test with:
-
-```bash
-MOCK=1 node server.js
-```
-
+- No-spend UI smoke test: `MOCK=1 node server.js`.
 - Vercel smoke tests should use hosted mock mode or a request body with
-  `settings: { "mock": true }` to avoid spending OpenRouter tokens.
+  `settings: { "mock": true }` to avoid spending tokens.
+- In the browser console, `maestroDebug()` prints a diagnostics report for bug
+  reports.
+```
