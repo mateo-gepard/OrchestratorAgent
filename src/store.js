@@ -295,16 +295,34 @@ async function loadMemoriesFromDisk() {
   }
 }
 
+async function loadMemoriesFromCloud() {
+  const { rows } = await db.exec('SELECT id, path, text, type, created_at, updated_at, used_at FROM memory');
+  return rows.map((r) =>
+    normalizeEntry({ id: r.id, path: r.path, text: r.text, type: r.type, ts: r.created_at, updatedAt: r.updated_at, usedAt: r.used_at })
+  );
+}
+
 async function loadMemories() {
   if (db.isCloud()) {
     try {
-      const { rows } = await db.exec('SELECT id, path, text, type, created_at, updated_at, used_at FROM memory');
-      return rows.map((r) =>
-        normalizeEntry({ id: r.id, path: r.path, text: r.text, type: r.type, ts: r.created_at, updatedAt: r.updated_at, usedAt: r.used_at })
-      );
+      return await loadMemoriesFromCloud();
     } catch {}
   }
   return loadMemoriesFromDisk();
+}
+
+// Serverless instances are ephemeral and each keeps its own in-memory caches.
+// Memory is read via getMemoriesSync() (the prompt-injection path needs it
+// synchronous), so a warm instance would otherwise never see a fact another
+// instance wrote to the cloud. Re-read the register from the cloud on the read
+// paths (bootstrap, run start) so it stays consistent across instances. A
+// transient failure keeps the existing cache rather than blanking it.
+export async function refreshMemories() {
+  if (!db.isCloud()) return memoryCache || [];
+  try {
+    memoryCache = await loadMemoriesFromCloud();
+  } catch {}
+  return memoryCache || [];
 }
 
 export function getMemoriesSync() {

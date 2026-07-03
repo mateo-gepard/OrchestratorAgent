@@ -77,12 +77,16 @@ async function handleApi(req, res, url) {
 
   if (method === 'GET' && pathname === '/api/bootstrap') {
     await store.ensureCloud().catch(() => {});
-    const settings = await store.loadSettings();
+    const [settings, conversations, memories] = await Promise.all([
+      store.loadSettings(),
+      store.listConversations(),
+      store.refreshMemories().catch(() => store.getMemoriesSync()),
+    ]);
     return sendJson(res, 200, {
       settings: maskSettings(settings),
       models: CATALOG,
-      conversations: await store.listConversations(),
-      memories: store.getMemoriesSync(),
+      conversations,
+      memories,
       mockForced: FORCE_MOCK,
     });
   }
@@ -255,6 +259,10 @@ async function prepareRun(body, { forceNoApproval }) {
   if (!mock && !settings.apiKey) {
     return { status: 400, error: 'No OpenRouter API key configured. Open Settings (gear icon) and add one, or enable mock mode.' };
   }
+
+  // Pull the latest register from the cloud so agents see facts written by
+  // other serverless instances, not just this warm instance's cache.
+  await store.refreshMemories().catch(() => {});
 
   let conversation = body.conversationId ? await store.loadConversation(body.conversationId) : null;
   if (!conversation) conversation = store.newConversation(task);
