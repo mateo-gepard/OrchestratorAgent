@@ -176,30 +176,6 @@ textarea, input, select { font-family: inherit; }
   letter-spacing: -0.02em;
   margin: 0 0 10px;
 }
-.hero-sub {
-  color: var(--text-secondary);
-  font-size: 15px;
-  max-width: 34rem;
-  margin: 0 auto 28px;
-  line-height: 1.5;
-}
-
-.suggestions {
-  display: none;
-  flex-wrap: wrap; gap: 8px; justify-content: center;
-  margin-top: 18px;
-}
-#main.empty .suggestions { display: flex; }
-.suggestion {
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  border-radius: 999px;
-  padding: 7px 14px;
-  font-size: 13px;
-}
-.suggestion:hover { border-color: var(--border-strong); color: var(--text); }
-
 /* messages */
 
 .msg { margin-bottom: 26px; }

@@ -1928,25 +1928,6 @@ $('#themeBtn').addEventListener('click', () => {
   applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 });
 
-// ---------------------------------------------------------------- suggestions
-
-const SUGGESTIONS = [
-  'Research current prices of the 5 best mirrorless cameras under €1500 — cite live sources',
-  'Plot how €10k grows over 30 years at 3%, 5% and 7% interest — chart plus the compound-interest formula',
-  'Write, run, and unit-test a Python script that deduplicates a messy CSV',
-  'Design a URL shortener: architecture diagram, REST API, and a tested Node implementation',
-];
-
-$('#suggestions').innerHTML = SUGGESTIONS.map((s) => `<button class="suggestion">${esc(s)}</button>`).join('');
-$('#suggestions').addEventListener('click', (e) => {
-  const btn = e.target.closest('.suggestion');
-  if (!btn) return;
-  inputEl.value = btn.textContent;
-  autosize();
-  updateSendBtn();
-  inputEl.focus();
-});
-
 // ---------------------------------------------------------------- boot
 
 (async function boot() {
