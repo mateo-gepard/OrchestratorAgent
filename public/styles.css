@@ -634,30 +634,82 @@ textarea, input, select { font-family: inherit; }
   border-radius: 20px;
   cursor: help;
 }
-.mem-list {
-  max-height: 180px;
+.mem-tree {
+  max-height: 280px;
   overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  padding: 6px 8px;
+  font-size: 12.5px;
+}
+.mem-branch > summary {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.mem-branch > summary::-webkit-details-marker { display: none; }
+.mem-branch > summary:hover { background: var(--bg-hover); }
+.mem-caret {
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--text-faint);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s ease;
+}
+.mem-branch[open] > summary .mem-caret { transform: rotate(90deg); }
+.mem-branch-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--violet);
+  font-weight: 600;
+}
+.mem-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  padding: 1px 7px;
+  border-radius: 20px;
+}
+.mem-crowded { color: var(--amber); font-size: 11px; cursor: help; }
+.mem-kids {
+  margin-left: 11px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border-strong);
 }
 .mem-item {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 12.5px;
+  padding: 4px 6px;
+  border-radius: 6px;
 }
-.mem-type {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--text-faint);
-  text-transform: uppercase;
+.mem-item:hover { background: var(--bg-hover); }
+.mem-dot {
   flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--green);
+  align-self: center;
 }
 .mem-text { flex: 1; }
+.mem-when {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
 .mem-del {
   background: none;
   border: none;
@@ -665,7 +717,9 @@ textarea, input, select { font-family: inherit; }
   cursor: pointer;
   font-size: 12px;
   padding: 0 2px;
+  opacity: 0;
 }
+.mem-item:hover .mem-del { opacity: 1; }
 .mem-del:hover { color: var(--red); }
 
 .sb-saved {

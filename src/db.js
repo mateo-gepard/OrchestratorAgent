@@ -10,9 +10,47 @@ let base = '';
 let token = '';
 let healthy = false;
 
+// The Vercel Turso integration lets users pick a custom env prefix when
+// connecting a database, so the vars may arrive as e.g.
+// STORAGE_TURSO_DATABASE_URL instead of the documented TURSO_DATABASE_URL.
+// Detect by value (libsql:// scheme or a turso.io host), not just by name,
+// and find the matching token by shared prefix.
+export function envConfig() {
+  const env = process.env;
+  let urlName = env.TURSO_DATABASE_URL ? 'TURSO_DATABASE_URL' : '';
+  if (!urlName) {
+    for (const [k, v] of Object.entries(env)) {
+      const s = String(v || '').trim();
+      const tursoName = /(^|_)(TURSO|LIBSQL)(_|$)/.test(k) && /URL$/.test(k) && /^(libsql|https?):\/\//.test(s);
+      const tursoValue = /^libsql:\/\//.test(s) || /^https?:\/\/[^\s/]*\.turso\.io/.test(s);
+      if (tursoName || tursoValue) { urlName = k; break; }
+    }
+  }
+  if (!urlName) {
+    const candidates = Object.keys(env).filter((k) => /TURSO|LIBSQL/i.test(k)).sort();
+    return { url: '', token: '', urlName: '', tokenName: '', candidates };
+  }
+  const tokenNames = [];
+  const stem = urlName.replace(/_(DATABASE_)?URL$/, '');
+  for (const s of [stem, stem.replace(/_DATABASE$/, '')]) {
+    tokenNames.push(`${s}_AUTH_TOKEN`, `${s}_DATABASE_AUTH_TOKEN`, `${s}_TOKEN`);
+  }
+  tokenNames.push('TURSO_AUTH_TOKEN', 'LIBSQL_AUTH_TOKEN');
+  let tokenName = tokenNames.find((k) => env[k]) || '';
+  if (!tokenName) tokenName = Object.keys(env).find((k) => /TURSO|LIBSQL/i.test(k) && /TOKEN|SECRET/i.test(k)) || '';
+  return {
+    url: String(env[urlName]).trim(),
+    token: String(env[tokenName] || '').trim(),
+    urlName,
+    tokenName,
+    candidates: [],
+  };
+}
+
 export function configure({ url, authToken } = {}) {
-  const u = String(process.env.TURSO_DATABASE_URL || url || '').trim();
-  token = String(process.env.TURSO_AUTH_TOKEN || authToken || '').trim();
+  const fromEnv = envConfig();
+  const u = String(fromEnv.url || url || '').trim();
+  token = String(fromEnv.token || authToken || '').trim();
   // libsql:// is the Turso scheme; the HTTP API lives on https. Plain http is
   // kept as-is so a local sqld instance works too.
   base = u.replace(/^libsql:\/\//, 'https://').replace(/\/+$/, '');

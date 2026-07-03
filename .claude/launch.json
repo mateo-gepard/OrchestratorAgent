@@ -12,6 +12,32 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "mock"],
       "port": 4646
+    },
+    {
+      "name": "maestro-mock-memtree",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "MOCK=1",
+        "PORT=4646",
+        "MAESTRO_DATA_DIR=/tmp/maestro-preview-memtree",
+        "node",
+        "server.js"
+      ],
+      "port": 4646
+    },
+    {
+      "name": "maestro-mock-cloudenv",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "MOCK=1",
+        "PORT=4646",
+        "MAESTRO_DATA_DIR=/tmp/maestro-preview-cloudenv",
+        "STORAGE_TURSO_DATABASE_URL=http://127.0.0.1:8793",
+        "STORAGE_TURSO_AUTH_TOKEN=test-token",
+        "node",
+        "server.js"
+      ],
+      "port": 4646
     }
   ]
 }

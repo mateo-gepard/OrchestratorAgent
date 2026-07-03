@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './src/store.js';
+import * as db from './src/db.js';
 import { CATALOG, ensureLivePricing } from './src/models.js';
 import { compactEventForStream, createRun, executeRun, resolveApproval, workspacePath } from './src/orchestrator.js';
 import { initSandbox } from './src/tools.js';
@@ -367,10 +368,16 @@ function maskSettings(settings) {
   masked.apiKey = settings.apiKey ? `…${settings.apiKey.slice(-4)}` : '';
   masked.hasBraveKey = Boolean(settings.braveApiKey);
   masked.braveApiKey = settings.braveApiKey ? `…${settings.braveApiKey.slice(-4)}` : '';
-  masked.hasTursoToken = Boolean(process.env.TURSO_AUTH_TOKEN || settings.tursoToken);
+  const dbEnv = db.envConfig();
+  masked.hasTursoToken = Boolean(dbEnv.token || settings.tursoToken);
   masked.tursoToken = settings.tursoToken ? `…${settings.tursoToken.slice(-4)}` : '';
-  masked.tursoUrl = process.env.TURSO_DATABASE_URL || settings.tursoUrl || '';
-  masked.tursoFromEnv = Boolean(process.env.TURSO_DATABASE_URL);
+  masked.tursoUrl = dbEnv.url || settings.tursoUrl || '';
+  masked.tursoFromEnv = Boolean(dbEnv.url);
+  // Diagnostics: which env var the URL was found under, or — when none
+  // matched — the names (never values) of Turso-ish vars that are present,
+  // so a misnamed integration variable is visible in /api/settings.
+  masked.cloudEnvVar = dbEnv.urlName;
+  masked.cloudEnvCandidates = dbEnv.candidates;
   const cloud = store.cloudStatus();
   masked.cloudConfigured = cloud.configured;
   masked.cloudConnected = cloud.connected;

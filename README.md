@@ -44,8 +44,8 @@ Environment variables:
 | `MAESTRO_DATA_DIR` | Overrides the runtime data directory. |
 | `MAESTRO_ACCESS_CODE` | When set, every `/api/*` request must present this code (header `x-maestro-access` or cookie `maestro_access`). The UI prompts for it once. Use it on any public deployment. |
 | `VERCEL` | Set by Vercel; switches storage and hosted-run behavior. |
-| `TURSO_DATABASE_URL` | Cloud database URL (`libsql://…`). The Vercel Turso integration injects this automatically — connect the database to the project and hosted persistence (chats, files, memory, settings, cost ledger) turns on without further config. Overrides the Settings value. |
-| `TURSO_AUTH_TOKEN` | Cloud database auth token; injected by the Turso integration alongside the URL. |
+| `TURSO_DATABASE_URL` | Cloud database URL (`libsql://…`). The Vercel Turso integration injects this automatically — connect the database to the project, redeploy, and hosted persistence (chats, files, memory, settings, cost ledger) turns on without further config. Overrides the Settings value. Prefixed names work too: any env var whose value is a `libsql://` URL (or `*.turso.io` host) is picked up, e.g. `STORAGE_TURSO_DATABASE_URL` from an integration with a custom prefix. `/api/settings` reports the detected name as `cloudEnvVar`. |
+| `TURSO_AUTH_TOKEN` | Cloud database auth token; injected by the Turso integration alongside the URL. Prefixed variants (`<PREFIX>_AUTH_TOKEN` next to the URL var) are detected automatically. |
 
 ## What It Does
 
