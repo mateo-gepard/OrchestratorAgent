@@ -62,6 +62,22 @@ export function cloudStatus() {
   return { configured: db.isConfigured(), connected: db.isCloud() };
 }
 
+// Self-healing: if the DB is configured but the connect failed (bad first
+// boot, transient outage), retry on demand — called from /api/bootstrap so a
+// page reload is enough to recover instead of waiting for a cold start.
+export async function ensureCloud() {
+  if (db.isConfigured() && !db.isCloud()) {
+    await db.init();
+    if (db.isCloud()) {
+      await seedCloudFromLocal().catch(() => {});
+      settingsCache = await composeSettings(await readLocalSettings());
+      statsCache = await loadStats();
+      memoryCache = await loadMemories();
+    }
+  }
+  return cloudStatus();
+}
+
 // First cloud connect: migrate existing local history up, so switching a
 // long-running local install to the cloud loses nothing.
 async function seedCloudFromLocal() {

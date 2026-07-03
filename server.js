@@ -75,6 +75,7 @@ async function handleApi(req, res, url) {
   const method = req.method;
 
   if (method === 'GET' && pathname === '/api/bootstrap') {
+    await store.ensureCloud().catch(() => {});
     const settings = await store.loadSettings();
     return sendJson(res, 200, {
       settings: maskSettings(settings),
@@ -369,7 +370,10 @@ function maskSettings(settings) {
   masked.hasTursoToken = Boolean(process.env.TURSO_AUTH_TOKEN || settings.tursoToken);
   masked.tursoToken = settings.tursoToken ? `…${settings.tursoToken.slice(-4)}` : '';
   masked.tursoUrl = process.env.TURSO_DATABASE_URL || settings.tursoUrl || '';
-  masked.cloudConnected = store.cloudStatus().connected;
+  masked.tursoFromEnv = Boolean(process.env.TURSO_DATABASE_URL);
+  const cloud = store.cloudStatus();
+  masked.cloudConfigured = cloud.configured;
+  masked.cloudConnected = cloud.connected;
   return masked;
 }
 
