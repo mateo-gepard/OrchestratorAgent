@@ -10,6 +10,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DATA_ROOT } from './paths.js';
 import { rid, normPath } from './util.js';
+import { setDisabledModels } from './models.js';
 import * as db from './db.js';
 
 const DIRS = {
@@ -33,6 +34,7 @@ export const DEFAULT_SETTINGS = {
   maxRunCost: 0, // hard per-run spend ceiling in USD; 0 = no cap
   verifyEnabled: true, // run the QA verifier on each node's deliverables; off = agents' output is accepted as-is
   memoryEnabled: true, // hierarchical register + memory tools for every agent
+  disabledModels: [], // model ids the user switched off — hidden from the planner and routing
   tursoUrl: '', // cloud database (libsql://…); empty = local files only
   tursoToken: '',
 
@@ -131,11 +133,17 @@ async function composeSettings(local) {
         const cloud = JSON.parse(rows[0].v);
         delete cloud.tursoUrl;
         delete cloud.tursoToken;
-        return { ...local, ...cloud };
+        return adoptSettings({ ...local, ...cloud });
       }
     } catch {}
   }
-  return local;
+  return adoptSettings(local);
+}
+
+// Push settings-derived state into the modules that act on it.
+function adoptSettings(s) {
+  setDisabledModels(s.disabledModels || []);
+  return s;
 }
 
 export async function loadSettings() {
@@ -149,6 +157,12 @@ export async function saveSettings(patch) {
   next.maxParallel = Math.min(8, Math.max(1, Number(next.maxParallel) || 4));
   next.maxRetries = Math.min(3, Math.max(0, Number(next.maxRetries) ?? 1));
   next.maxRunCost = Math.max(0, Number(next.maxRunCost) || 0);
+  // The orchestrator, verifier and fallback models can never be disabled —
+  // picking a model for one of those roles silently re-enables it.
+  next.disabledModels = [...new Set((Array.isArray(next.disabledModels) ? next.disabledModels : []).map(String))].filter(
+    (id) => id && id !== next.orchestratorModel && id !== next.verifierModel && id !== next.fallbackModel
+  );
+  setDisabledModels(next.disabledModels);
   next.tursoUrl = String(next.tursoUrl || '').trim();
   next.tursoToken = String(next.tursoToken || '').trim();
 

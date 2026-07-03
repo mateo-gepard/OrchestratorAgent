@@ -263,8 +263,20 @@ export async function ensureLivePricing() {
   }
 }
 
+// Models the user switched off in Settings — excluded from the planner's
+// catalog and from node routing. Kept here (not in settings reads) so every
+// caller of availableModels() sees one consistent fleet.
+let disabledIds = new Set();
+
+export function setDisabledModels(ids = []) {
+  disabledIds = new Set(Array.isArray(ids) ? ids.map(String) : []);
+}
+
 export function availableModels() {
-  return CATALOG.filter((m) => m.available !== false);
+  const usable = CATALOG.filter((m) => m.available !== false);
+  const enabled = usable.filter((m) => !disabledIds.has(m.id));
+  // Safety net: a fully disabled fleet would brick planning — ignore the list then.
+  return enabled.length ? enabled : usable;
 }
 
 // Resolve which slug(s) to call for a model. With preferFree on and a usable

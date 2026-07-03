@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './src/store.js';
 import * as db from './src/db.js';
-import { CATALOG, ensureLivePricing } from './src/models.js';
+import { CATALOG, ensureLivePricing, setDisabledModels } from './src/models.js';
 import { compactEventForStream, createRun, executeRun, resolveApproval, workspacePath } from './src/orchestrator.js';
 import { initSandbox } from './src/tools.js';
 import { executeMockRun } from './src/mock.js';
@@ -296,6 +296,13 @@ function applyHostedSettings(settings, patch) {
   if (typeof patch.mock === 'boolean') settings.mock = patch.mock;
   if (typeof patch.memoryEnabled === 'boolean') settings.memoryEnabled = patch.memoryEnabled;
   if (typeof patch.verifyEnabled === 'boolean') settings.verifyEnabled = patch.verifyEnabled;
+  if (Array.isArray(patch.disabledModels)) {
+    // Same guard as saveSettings: the role models can never be switched off.
+    settings.disabledModels = [...new Set(patch.disabledModels.map(String))].filter(
+      (id) => id && id !== settings.orchestratorModel && id !== settings.verifierModel && id !== settings.fallbackModel
+    );
+    setDisabledModels(settings.disabledModels);
+  }
 }
 
 async function persistUserTurn(conversation, run) {

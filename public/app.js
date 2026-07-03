@@ -88,7 +88,7 @@ function loadHostedSettings() {
 function saveHostedSettings(patch) {
   const current = loadHostedSettings();
   const next = { ...current };
-  for (const key of ['userName', 'orchestratorModel', 'verifierModel', 'maxParallel', 'maxRetries', 'maxRunCost', 'preferFree', 'mock', 'memoryEnabled', 'verifyEnabled']) {
+  for (const key of ['userName', 'orchestratorModel', 'verifierModel', 'maxParallel', 'maxRetries', 'maxRunCost', 'preferFree', 'mock', 'memoryEnabled', 'verifyEnabled', 'disabledModels']) {
     if (patch[key] !== undefined) next[key] = patch[key];
   }
   if (patch.apiKey) next.apiKey = patch.apiKey;
@@ -127,6 +127,7 @@ function hostedRunSettings() {
     mock: state.settings.mock,
     memoryEnabled: state.settings.memoryEnabled,
     verifyEnabled: state.settings.verifyEnabled,
+    disabledModels: state.settings.disabledModels || [],
   };
 }
 
@@ -1718,93 +1719,204 @@ async function openSettings() {
   } catch {}
   const s = state.settings;
   const memCount = (state.memories || []).length;
-  const frontier = state.models.filter((m) => m.reasoning || m.tier === 'frontier');
+  const usable = state.models.filter((m) => m.available !== false);
+  const frontier = usable.filter((m) => m.reasoning || m.tier === 'frontier');
   const options = (list, sel) =>
     list.map((m) => `<option value="${esc(m.id)}" ${m.id === sel ? 'selected' : ''}>${esc(m.name)} — ${esc(m.id)}</option>`).join('');
+  // Fleet toggles edit this set live; it becomes settings.disabledModels on save.
+  const disabled = new Set((s.disabledModels || []).map(String));
+  const toggle = (id, on, title, desc) => `<label class="tog-row" for="${id}">
+      <span class="tog-copy"><span class="tog-title">${title}</span>${desc ? `<span class="tog-desc">${desc}</span>` : ''}</span>
+      <input type="checkbox" class="tog-input" id="${id}" ${on ? 'checked' : ''}/><span class="tog-pill"></span>
+    </label>`;
+  const navIcon = (d) =>
+    `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  const NAV = [
+    ['general', 'General', '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'],
+    ['models', 'Model fleet', '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/>'],
+    ['runs', 'Runs &amp; limits', '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>'],
+    ['memory', 'Memory', '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>'],
+    ['connections', 'Connections', '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'],
+  ];
 
-  $('#modalRoot').innerHTML = `<div class="modal-backdrop" id="backdrop"><div class="modal">
-    <form id="settingsForm">
-    <h2>Settings</h2>
-    <div class="field">
-      <label>OpenRouter API key</label>
-      <input type="password" id="setKey" placeholder="${s.hasApiKey ? `saved (${esc(s.apiKey)}) — leave blank to keep` : 'sk-or-v1-…'}" autocomplete="new-password"/>
-      <div class="hint">Stored locally in data/settings.json. Get one at openrouter.ai/keys.</div>
-    </div>
-    <div class="field">
-      <label>Brave Search API key (optional — sharper web_search for agents)</label>
-      <input type="password" id="setBrave" placeholder="${s.hasBraveKey ? `saved (${esc(s.braveApiKey)}) — leave blank to keep` : 'free tier at brave.com/search/api'}" autocomplete="new-password"/>
-      <div class="hint">Without it, agents fall back to DuckDuckGo.</div>
-    </div>
-    <div class="field">
-      <label>Your name (for the greeting)</label>
-      <input type="text" id="setName" value="${esc(s.userName)}"/>
-    </div>
-    <div class="field">
-      <label>Cloud database — Turso/libSQL URL (optional)</label>
-      <input type="text" id="setTursoUrl" value="${esc(s.tursoUrl || '')}" placeholder="libsql://your-db.turso.io" autocomplete="off" ${s.tursoFromEnv ? `disabled title="Set via ${esc(s.cloudEnvVar || 'TURSO_DATABASE_URL')} env var"` : ''}/>
-      <div class="hint">${
-        s.cloudConnected
-          ? `● Connected${s.tursoFromEnv ? ` (env var ${esc(s.cloudEnvVar)})` : ''} — chats, memory, files, settings and the cost ledger persist in the cloud.`
-          : s.cloudConfigured
-            ? '⚠ Configured but NOT reachable — check the URL and auth token (exact error in the server log). Falling back to local files.'
-            : (s.cloudEnvCandidates || []).length
-              ? `⚠ Env vars ${s.cloudEnvCandidates.map(esc).join(', ')} exist but none holds a database URL — expected TURSO_DATABASE_URL with a libsql:// value.`
-              : 'Empty = everything stays in local files. With a free DB from turso.tech, chats, memory and costs survive restarts and hosted deployments.'
-      }</div>
-    </div>
-    <div class="field">
-      <label>Turso auth token</label>
-      <input type="password" id="setTursoToken" placeholder="${s.hasTursoToken ? `saved (${esc(s.tursoToken)}) — leave blank to keep` : 'eyJhbGci…'}" autocomplete="new-password"/>
-    </div>
-    <div class="field">
-      <label>Orchestrator model — plans, verifies scope, synthesizes</label>
-      <select id="setOrch">${options(frontier, s.orchestratorModel)}</select>
-    </div>
-    <div class="field">
-      <label>Verifier model — checks each deliverable (keep it cheap)</label>
-      <select id="setVerif">${options(state.models, s.verifierModel)}</select>
-    </div>
-    <div class="field-row">
+  $('#modalRoot').innerHTML = `<div class="modal-backdrop" id="backdrop"><div class="modal settings-modal">
+    <form id="settingsForm" class="set-layout">
+    <nav class="set-nav">
+      <div class="set-nav-title">Settings</div>
+      ${NAV.map(([id, label, icon], i) => `<button type="button" class="set-nav-item ${i === 0 ? 'active' : ''}" data-panel="${id}">${navIcon(icon)}<span>${label}</span></button>`).join('')}
+    </nav>
+    <div class="set-main">
+    <div class="set-panels">
+
+    <section class="set-panel active" data-panel="general">
+      <h3>General</h3>
+      <p class="set-blurb">How Maestro addresses you and how much it asks before acting.</p>
       <div class="field">
-        <label>Max parallel agents</label>
-        <input type="number" id="setPar" min="1" max="8" value="${s.maxParallel}"/>
+        <label>Your name</label>
+        <input type="text" id="setName" value="${esc(s.userName)}"/>
+        <div class="hint">Used in the greeting.</div>
+      </div>
+      ${toggle('setApprove', s.approvePlans, 'Review plans before agents launch', 'Pause each run for approval — edit models, tools and briefs before work starts.')}
+      ${toggle('setMock', s.mock, 'Mock mode', 'Simulate runs without API calls. Free and instant, with fake output.')}
+    </section>
+
+    <section class="set-panel" data-panel="models">
+      <h3>Model fleet</h3>
+      <p class="set-blurb">The orchestrator routes each sub-task to the best model for the job. Switch a model off to keep it out of every plan.</p>
+      <div class="field">
+        <label>Orchestrator — plans, verifies scope, synthesizes</label>
+        <select id="setOrch">${options(frontier, s.orchestratorModel)}</select>
       </div>
       <div class="field">
-        <label>Max retries per node</label>
-        <input type="number" id="setRetry" min="0" max="3" value="${s.maxRetries}"/>
+        <label>Verifier — checks each deliverable (keep it cheap)</label>
+        <select id="setVerif">${options(usable, s.verifierModel)}</select>
+      </div>
+      <div class="fleet-count-row"><span id="fleetCount"></span></div>
+      <div id="fleetGroups"></div>
+    </section>
+
+    <section class="set-panel" data-panel="runs">
+      <h3>Runs &amp; limits</h3>
+      <p class="set-blurb">Guardrails for every run: concurrency, retries and spend.</p>
+      <div class="field-row">
+        <div class="field">
+          <label>Max parallel agents</label>
+          <input type="number" id="setPar" min="1" max="8" value="${s.maxParallel}"/>
+        </div>
+        <div class="field">
+          <label>Max retries per node</label>
+          <input type="number" id="setRetry" min="0" max="3" value="${s.maxRetries}"/>
+        </div>
+        <div class="field">
+          <label>Cost cap per run ($, 0 = off)</label>
+          <input type="number" id="setCap" min="0" step="0.5" value="${s.maxRunCost || 0}"/>
+        </div>
+      </div>
+      ${toggle('setVerify', s.verifyEnabled !== false, 'Verify each deliverable', 'A cheap QA agent checks every node and retries once on failure. Off = accept agent output as-is, cheaper and faster.')}
+      ${toggle('setFree', s.preferFree, 'Prefer $0 :free variants', 'Route to free OpenRouter variants when one exists. Rate-limited; falls back to paid automatically.')}
+    </section>
+
+    <section class="set-panel" data-panel="memory">
+      <h3>Memory</h3>
+      <p class="set-blurb">Durable facts agents keep between runs — fully inspectable and deletable.</p>
+      ${toggle('setMemory', s.memoryEnabled !== false, 'Agent memory', 'A hierarchical register of durable facts every agent can read and write.')}
+      <div class="field"><label>The memory register — ${memCount} fact${memCount === 1 ? '' : 's'}</label><div class="mem-tree" id="memTree"></div></div>
+    </section>
+
+    <section class="set-panel" data-panel="connections">
+      <h3>Connections</h3>
+      <p class="set-blurb">Keys and storage. Everything stays on your machine unless you connect a cloud database.</p>
+      <div class="field">
+        <label>OpenRouter API key</label>
+        <input type="password" id="setKey" placeholder="${s.hasApiKey ? `saved (${esc(s.apiKey)}) — leave blank to keep` : 'sk-or-v1-…'}" autocomplete="new-password"/>
+        <div class="hint">Stored locally in data/settings.json. Get one at openrouter.ai/keys.</div>
       </div>
       <div class="field">
-        <label>Cost cap per run ($, 0 = off)</label>
-        <input type="number" id="setCap" min="0" step="0.5" value="${s.maxRunCost || 0}"/>
+        <label>Brave Search API key (optional — sharper web_search for agents)</label>
+        <input type="password" id="setBrave" placeholder="${s.hasBraveKey ? `saved (${esc(s.braveApiKey)}) — leave blank to keep` : 'free tier at brave.com/search/api'}" autocomplete="new-password"/>
+        <div class="hint">Without it, agents fall back to DuckDuckGo.</div>
       </div>
+      <div class="field">
+        <label>Cloud database — Turso/libSQL URL (optional)</label>
+        <input type="text" id="setTursoUrl" value="${esc(s.tursoUrl || '')}" placeholder="libsql://your-db.turso.io" autocomplete="off" ${s.tursoFromEnv ? `disabled title="Set via ${esc(s.cloudEnvVar || 'TURSO_DATABASE_URL')} env var"` : ''}/>
+        <div class="hint">${
+          s.cloudConnected
+            ? `● Connected${s.tursoFromEnv ? ` (env var ${esc(s.cloudEnvVar)})` : ''} — chats, memory, files, settings and the cost ledger persist in the cloud.`
+            : s.cloudConfigured
+              ? '⚠ Configured but NOT reachable — check the URL and auth token (exact error in the server log). Falling back to local files.'
+              : (s.cloudEnvCandidates || []).length
+                ? `⚠ Env vars ${s.cloudEnvCandidates.map(esc).join(', ')} exist but none holds a database URL — expected TURSO_DATABASE_URL with a libsql:// value.`
+                : 'Empty = everything stays in local files. With a free DB from turso.tech, chats, memory and costs survive restarts and hosted deployments.'
+        }</div>
+      </div>
+      <div class="field">
+        <label>Turso auth token</label>
+        <input type="password" id="setTursoToken" placeholder="${s.hasTursoToken ? `saved (${esc(s.tursoToken)}) — leave blank to keep` : 'eyJhbGci…'}" autocomplete="new-password"/>
+      </div>
+    </section>
+
     </div>
-    <div class="check-field">
-      <input type="checkbox" id="setApprove" ${s.approvePlans ? 'checked' : ''}/>
-      <label for="setApprove" style="margin:0">Review plans before agents launch (edit models, tools, briefs)</label>
-    </div>
-    <div class="check-field">
-      <input type="checkbox" id="setFree" ${s.preferFree ? 'checked' : ''}/>
-      <label for="setFree" style="margin:0">Prefer $0 :free model variants when OpenRouter offers one (rate-limited; falls back to paid automatically)</label>
-    </div>
-    <div class="check-field">
-      <input type="checkbox" id="setVerify" ${s.verifyEnabled !== false ? 'checked' : ''}/>
-      <label for="setVerify" style="margin:0">Verify each deliverable — a cheap QA agent checks every node and retries once on failure (off = accept agent output as-is, cheaper &amp; faster)</label>
-    </div>
-    <div class="check-field">
-      <input type="checkbox" id="setMock" ${s.mock ? 'checked' : ''}/>
-      <label for="setMock" style="margin:0">Mock mode — simulate runs without API calls</label>
-    </div>
-    <div class="check-field">
-      <input type="checkbox" id="setMemory" ${s.memoryEnabled !== false ? 'checked' : ''}/>
-      <label for="setMemory" style="margin:0">Memory — a hierarchical register of durable facts every agent can read and write (listed below, fully deletable)</label>
-    </div>
-    ${memCount ? `<div class="field"><label>The memory register — ${memCount} fact${memCount === 1 ? '' : 's'}</label><div class="mem-tree" id="memTree"></div></div>` : ''}
     <div class="modal-actions">
       <button class="btn" id="setCancel" type="button">Cancel</button>
       <button class="btn primary" id="setSave" type="submit">Save</button>
     </div>
+    </div>
     </form>
   </div></div>`;
+
+  // Section navigation — panels stay mounted so every input survives tab switches.
+  for (const btn of document.querySelectorAll('.set-nav-item')) {
+    btn.onclick = () => {
+      document.querySelectorAll('.set-nav-item').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.set-panel').forEach((p) => p.classList.toggle('active', p.dataset.panel === btn.dataset.panel));
+    };
+  }
+
+  // The fleet, grouped by tier. Models holding a role (orchestrator/verifier/
+  // fallback) are locked on — picking a disabled model for a role re-enables it.
+  const TIERS = [
+    ['frontier', 'Frontier', 'deep reasoning, hard problems'],
+    ['mid', 'Mid-tier', 'the workhorses — quality per dollar'],
+    ['budget', 'Budget', 'bulk and mechanical work, near-free'],
+  ];
+  const fmtP = (p) => `$${String(+Number(p).toFixed(2))}`;
+  const rolesFor = (id) => {
+    const roles = [];
+    if ($('#setOrch').value === id) roles.push('orchestrator');
+    if ($('#setVerif').value === id) roles.push('verifier');
+    if (s.fallbackModel === id) roles.push('fallback');
+    return roles;
+  };
+  const updateFleetCount = () => {
+    const on = usable.filter((m) => !disabled.has(m.id)).length;
+    $('#fleetCount').textContent = `${on} of ${usable.length} models enabled`;
+  };
+  const renderFleet = () => {
+    const el = $('#fleetGroups');
+    if (!el) return;
+    el.innerHTML = TIERS.map(([tier, label, blurb]) => {
+      const models = state.models.filter((m) => m.tier === tier);
+      if (!models.length) return '';
+      const cards = models.map((m) => {
+        const dead = m.available === false;
+        const roles = dead ? [] : rolesFor(m.id);
+        if (roles.length) disabled.delete(m.id);
+        const off = disabled.has(m.id);
+        const chips = [
+          `<span class="fleet-chip">${Math.round(m.context / 1000)}k ctx</span>`,
+          m.vision ? '<span class="fleet-chip">vision</span>' : '',
+          m.reasoning ? '<span class="fleet-chip">reasoning</span>' : '',
+          m.freeVariant ? '<span class="fleet-chip free">:free variant</span>' : '',
+        ].join('');
+        const control = dead
+          ? '<span class="fleet-role dead">unavailable</span>'
+          : roles.length
+            ? `<span class="fleet-role" title="Models holding a role can't be switched off">${roles.join(' · ')}</span><span class="tog-pill locked"></span>`
+            : `<label class="fleet-tog-wrap"><input type="checkbox" class="tog-input fleet-tog" data-model="${esc(m.id)}" ${off ? '' : 'checked'}/><span class="tog-pill"></span></label>`;
+        return `<div class="fleet-card${off ? ' off' : ''}${dead ? ' dead' : ''}" data-card="${esc(m.id)}">
+          <div class="fleet-main">
+            <div class="fleet-head"><span class="fleet-name">${esc(m.name)}</span><span class="tier-badge t-${esc(m.tier)}">${esc(m.tier)}</span></div>
+            <div class="fleet-meta"><span class="fleet-price">${fmtP(m.priceIn)} in · ${fmtP(m.priceOut)} out / 1M</span>${chips}</div>
+            <div class="fleet-notes">${esc(m.strengths)}</div>
+          </div>
+          <div class="fleet-ctl">${control}</div>
+        </div>`;
+      }).join('');
+      return `<div class="fleet-group"><div class="fleet-group-head"><span class="fleet-group-name">${label}</span><span class="fleet-group-blurb">${blurb}</span></div>${cards}</div>`;
+    }).join('');
+    for (const t of el.querySelectorAll('.fleet-tog')) {
+      t.addEventListener('change', () => {
+        if (t.checked) disabled.delete(t.dataset.model);
+        else disabled.add(t.dataset.model);
+        el.querySelector(`[data-card="${CSS.escape(t.dataset.model)}"]`)?.classList.toggle('off', !t.checked);
+        updateFleetCount();
+      });
+    }
+    updateFleetCount();
+  };
+  renderFleet();
+  $('#setOrch').addEventListener('change', renderFleet);
+  $('#setVerif').addEventListener('change', renderFleet);
 
   $('#setCancel').onclick = closeModal;
   // No return value: a DOM0 onclick returning false acts as preventDefault
@@ -1880,6 +1992,7 @@ async function openSettings() {
         verifyEnabled: $('#setVerify').checked,
         mock: $('#setMock').checked,
         memoryEnabled: $('#setMemory').checked,
+        disabledModels: [...disabled],
       };
       const res = await api('/api/settings', {
         method: 'POST',
