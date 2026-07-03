@@ -129,7 +129,7 @@ persists — by design.
 ├── src/
 │   ├── orchestrator.js       Run lifecycle: plan, execute, verify, escalate, synthesize
 │   ├── prompts.js            Planner, agent, verifier, replan, synthesis, memory prompts
-│   ├── models.js             Model fleet, live pricing, routing + escalation ladder
+│   ├── models.js             Model fleet (enable/disable per model in Settings), live pricing, routing
 │   ├── tools.js              Web / code / workspace tools
 │   ├── openrouter.js         Streaming OpenRouter client, retries, free-variant fallback
 │   ├── store.js              Persistence facade: flat files + cloud DB, memory, stats, ledger
