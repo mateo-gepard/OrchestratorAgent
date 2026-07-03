@@ -9,6 +9,15 @@ import { memoryBriefing, memoryRegisterWithIds } from './memory.js';
 // Re-exported so the orchestrator keeps a single prompts import.
 export { memoryBriefing };
 
+// Appended to every prompt whose response we parse as JSON. Models most often
+// break JSON.parse with raw newlines and unescaped backslashes inside string
+// values — e.g. writing "Leitzinsen und\Eventuell" where \E is not a valid
+// escape. extractJson repairs a lot of this after the fact, but a clean emit is
+// cheaper and more reliable than leaning on the repair pass.
+const JSON_DISCIPLINE = `## JSON discipline
+Your entire response must be ONE strictly-parseable JSON object — it starts with { and ends with }, no prose, no markdown fences, no comments, no trailing commas.
+Inside string values: write every newline as \\n (never a raw line break), and escape every literal backslash as \\\\ and every double-quote as \\". A lone backslash that isn't part of a valid escape (\\n \\t \\" …) will break the parse.`;
+
 // The learning-router loop: verifier verdicts recorded by past runs become
 // routing signal for the next plan. Only models with enough samples appear —
 // three noisy data points shouldn't override the curated catalog notes.
@@ -143,7 +152,9 @@ Respond with **JSON only** — no prose before or after:
       "verification": "rubric the verifier checks the output against, or 'none'"
     }
   ]
-}`;
+}
+
+${JSON_DISCIPLINE}`;
 }
 
 export function plannerUserPrompt({ task, attachments, conversationContext, date }) {
@@ -301,7 +312,9 @@ Respond with JSON only:
   "add_nodes": [ { ...full node schema... } ],
   "update_nodes": [ { "id": "existing pending node id", ...only the fields you change... } ],
   "drop_nodes": ["ids"]
-}`;
+}
+
+${JSON_DISCIPLINE}`;
 }
 
 export function replanUserPrompt({ task, plan, nodeStates, failedNode, failureReason, date }) {

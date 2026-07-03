@@ -33,7 +33,14 @@ import {
 } from './prompts.js';
 
 const MAX_NODES = 12;
-const NODE_OUTPUT_CAP = 60_000; // chars of one node's output passed downstream
+const NODE_OUTPUT_CAP = 60_000; // chars of a node's output kept for the UI snapshot and for synthesis
+// What a DEPENDENT agent sees of each upstream output. Kept well below
+// NODE_OUTPUT_CAP: a downstream node needs the upstream deliverables and
+// conclusions, not its entire verbatim transcript, and this text is injected
+// into every dependent's prompt (and re-read every tool round) — the biggest
+// avoidable token sink in multi-node runs. Head+tail so setup AND conclusions
+// survive; bulk data is meant to travel through the shared workspace as files.
+const UPSTREAM_OUTPUT_CAP = 24_000;
 const TEXT_FILE_CAP = 60_000;
 const DELTA_FLUSH_MS = 250;
 const MAX_TOOL_ROUNDS = 12; // tool rounds per agent attempt
@@ -1087,7 +1094,7 @@ async function buildNodeInput(run, node, model) {
       .map((depId) => {
         const dep = run.plan.nodes.find((n) => n.id === depId);
         const st = run.nodes[depId];
-        return `## Output of "${dep?.title || depId}" (${depId})\n${truncate(st.output || '(no output)', NODE_OUTPUT_CAP)}`;
+        return `## Output of "${dep?.title || depId}" (${depId})\n${truncateMiddle(st.output || '(no output)', UPSTREAM_OUTPUT_CAP)}`;
       })
       .join('\n\n');
     sections.push(`# Inputs from upstream agents\n${upstream}`);
