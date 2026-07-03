@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS = {
   maxParallel: 4,
   maxRetries: 1,
   maxRunCost: 0, // hard per-run spend ceiling in USD; 0 = no cap
+  verifyEnabled: true, // run the QA verifier on each node's deliverables; off = agents' output is accepted as-is
   memoryEnabled: true, // hierarchical register + memory tools for every agent
   tursoUrl: '', // cloud database (libsql://…); empty = local files only
   tursoToken: '',

@@ -88,7 +88,7 @@ function loadHostedSettings() {
 function saveHostedSettings(patch) {
   const current = loadHostedSettings();
   const next = { ...current };
-  for (const key of ['userName', 'orchestratorModel', 'verifierModel', 'maxParallel', 'maxRetries', 'maxRunCost', 'preferFree', 'mock', 'memoryEnabled']) {
+  for (const key of ['userName', 'orchestratorModel', 'verifierModel', 'maxParallel', 'maxRetries', 'maxRunCost', 'preferFree', 'mock', 'memoryEnabled', 'verifyEnabled']) {
     if (patch[key] !== undefined) next[key] = patch[key];
   }
   if (patch.apiKey) next.apiKey = patch.apiKey;
@@ -126,6 +126,7 @@ function hostedRunSettings() {
     preferFree: state.settings.preferFree,
     mock: state.settings.mock,
     memoryEnabled: state.settings.memoryEnabled,
+    verifyEnabled: state.settings.verifyEnabled,
   };
 }
 
@@ -1786,6 +1787,10 @@ async function openSettings() {
       <label for="setFree" style="margin:0">Prefer $0 :free model variants when OpenRouter offers one (rate-limited; falls back to paid automatically)</label>
     </div>
     <div class="check-field">
+      <input type="checkbox" id="setVerify" ${s.verifyEnabled !== false ? 'checked' : ''}/>
+      <label for="setVerify" style="margin:0">Verify each deliverable — a cheap QA agent checks every node and retries once on failure (off = accept agent output as-is, cheaper &amp; faster)</label>
+    </div>
+    <div class="check-field">
       <input type="checkbox" id="setMock" ${s.mock ? 'checked' : ''}/>
       <label for="setMock" style="margin:0">Mock mode — simulate runs without API calls</label>
     </div>
@@ -1872,6 +1877,7 @@ async function openSettings() {
         maxRunCost: Math.max(0, Number($('#setCap').value) || 0),
         approvePlans: $('#setApprove').checked,
         preferFree: $('#setFree').checked,
+        verifyEnabled: $('#setVerify').checked,
         mock: $('#setMock').checked,
         memoryEnabled: $('#setMemory').checked,
       };

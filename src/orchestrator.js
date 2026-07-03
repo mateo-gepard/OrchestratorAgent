@@ -12,7 +12,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chat } from './openrouter.js';
-import { getModel, ensureLivePricing, availableModels, routeModel, estimateCost, escalationModel } from './models.js';
+import { getModel, ensureLivePricing, availableModels, routeModel, estimateCost } from './models.js';
 import { loadFile, recordVerdict, updateMemories, cloudStatus } from './store.js';
 import { extractJson, rid, truncate, truncateMiddle } from './util.js';
 import { toolDefs, execTool, summarizeArgs, listWorkspace } from './tools.js';
@@ -49,6 +49,7 @@ const TOOL_DIET_CAP = 1500;
 // it judges against the rubric, it doesn't need the full 60k-char transcript.
 const VERIFY_OUTPUT_CAP = 24_000; // chars of node output shown to the verifier (head+tail)
 const VERIFY_TOOL_RESULT_CAP = 4_000; // chars of each tool result kept in the verifier's context
+const VERIFY_PASS_SCORE = 4; // verifier score (0-10) at or above which a deliverable passes — deliberately lenient
 
 const EFFORT_MAX_TOKENS = { none: 8000, low: 10_000, medium: 14_000, high: 20_000 };
 const HOSTED_EFFORT_MAX_TOKENS = { none: 4500, low: 5500, medium: 6500, high: 6500 };
@@ -786,8 +787,8 @@ async function runNode(run, node) {
     const content = await agentLoop(run, node, st, messages, { defs, model: getModel(node.model) });
     st.output = content;
 
-    // Verify the deliverables unless the planner waived it.
-    if (node.verification && node.verification !== 'none') {
+    // Verify the deliverables unless verification is turned off or the planner waived it.
+    if (settings.verifyEnabled !== false && node.verification && node.verification !== 'none') {
       st.status = 'verifying';
       emit(run, 'node_status', { id: node.id, status: 'verifying', attempt });
       const verdict = await verifyNode(run, node, content);
@@ -801,18 +802,11 @@ async function runNode(run, node) {
       }).catch(() => {});
 
       if (!verdict.pass && attempt < maxAttempts) {
-        // Cheap first, escalate on proof of failure: the retry runs one
-        // capability tier up — the same dice rarely land differently.
-        const esc = escalationModel(node.model);
-        emit(run, 'node_status', { id: node.id, status: 'retry', attempt, feedback: verdict.feedback, escalatedTo: esc || undefined });
-        if (esc) {
-          node.escalatedFrom = node.model;
-          node.model = esc;
-          const note = `Verifier rejected the output — escalating the retry from ${node.escalatedFrom} to ${esc}.`;
-          st.toolLog.push({ note, by: 'system' });
-          emit(run, 'node_note', { id: node.id, text: note, by: 'system' });
-          emit(run, 'plan', run.plan); // refresh model chips in the UI
-        }
+        // Retry on the SAME model with the verifier's feedback. We deliberately
+        // do NOT auto-swap to a pricier tier — that once turned one rejected
+        // cheap node into a multi-euro run. A model usually fixes its own miss
+        // when told exactly what was wrong.
+        emit(run, 'node_status', { id: node.id, status: 'retry', attempt, feedback: verdict.feedback });
         messages.push({ role: 'assistant', content });
         messages.push({
           role: 'user',
@@ -1071,7 +1065,7 @@ async function verifyNode(run, node, output) {
       const verdict = extractJson(res.content);
       const score = typeof verdict.score === 'number' ? verdict.score : null;
       return {
-        pass: score != null ? score >= 5 : verdict.pass !== false,
+        pass: score != null ? score >= VERIFY_PASS_SCORE : verdict.pass !== false,
         score,
         feedback: String(verdict.feedback || ''),
         checked: st.toolLog.some((e) => e.by === 'verifier'),

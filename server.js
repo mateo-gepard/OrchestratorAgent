@@ -295,6 +295,7 @@ function applyHostedSettings(settings, patch) {
   if (typeof patch.preferFree === 'boolean') settings.preferFree = patch.preferFree;
   if (typeof patch.mock === 'boolean') settings.mock = patch.mock;
   if (typeof patch.memoryEnabled === 'boolean') settings.memoryEnabled = patch.memoryEnabled;
+  if (typeof patch.verifyEnabled === 'boolean') settings.verifyEnabled = patch.verifyEnabled;
 }
 
 async function persistUserTurn(conversation, run) {
