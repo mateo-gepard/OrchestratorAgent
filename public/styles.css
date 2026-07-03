@@ -162,8 +162,9 @@ textarea, input, select { font-family: inherit; }
 #chat { max-width: 46rem; margin: 0 auto; padding: 28px 24px 24px; }
 
 #hero { display: none; text-align: center; padding: 0 24px; }
+#main.empty { justify-content: center; }
 #main.empty #hero { display: block; }
-#main.empty #chatScroll { flex: 0 0 auto; margin-top: 18vh; overflow: visible; }
+#main.empty #chatScroll { flex: 0 0 auto; overflow: visible; }
 #main.empty #chat { display: none; }
 #main.empty #composerWrap { position: static; max-width: 46rem; margin: 0 auto; width: 100%; }
 #main.empty .footnote { display: none; }
