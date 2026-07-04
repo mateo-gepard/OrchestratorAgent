@@ -32,9 +32,11 @@ export function truncateMiddle(text, max) {
 export function extractJson(text) {
   if (!text) throw new Error('empty response');
 
-  // Candidate regions: every fenced block first (a model may wrap its whole
-  // answer in an outer fence and nest ```json inside, so a single fence can be
-  // empty or decorative), then the raw text as a fallback.
+  // Candidate regions: each fenced block, plus the raw text. Fenced blocks help
+  // when a model wraps its answer in a decorative outer fence, BUT model JSON
+  // routinely embeds ```code fences inside its own string values (e.g. an
+  // example block in a node's instructions). That desyncs fence pairing and
+  // mis-slices the JSON — so we never trust fence boundaries to pick the winner.
   const candidates = [];
   const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gi;
   let m;
@@ -43,15 +45,19 @@ export function extractJson(text) {
   }
   candidates.push(text);
 
+  // Return the LARGEST parseable object across ALL candidates, not the first
+  // candidate that happens to yield one. A mis-sliced fenced block can contain a
+  // complete inner node object; the intended top-level object (found intact in
+  // the raw text) is always larger, so global-max recovers it.
+  let best;
   for (const source of candidates) {
-    const objects = [];
     let start = source.indexOf('{');
     while (start !== -1) {
       const slice = balancedSlice(source, start);
       if (slice) {
         const parsed = tryParseJson(slice);
         if (parsed !== undefined) {
-          objects.push({ len: slice.length, value: parsed });
+          if (!best || slice.length > best.len) best = { len: slice.length, value: parsed };
           // The whole object parsed — skip its interior so nested objects don't
           // compete with (and can't be mistaken for) their container.
           start = source.indexOf('{', start + slice.length);
@@ -60,11 +66,8 @@ export function extractJson(text) {
       }
       start = source.indexOf('{', start + 1);
     }
-    if (objects.length) {
-      objects.sort((a, b) => b.len - a.len);
-      return objects[0].value;
-    }
   }
+  if (best) return best.value;
   throw new Error('no parseable JSON object found in model output');
 }
 
